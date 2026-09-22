@@ -1,3 +1,3 @@
-(class) DerivedClass
+class DerivedClass()
 
 A class that inherits from BaseClass.

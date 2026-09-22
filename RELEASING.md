@@ -24,9 +24,9 @@ intentionally does not replace existing release assets.
 
 **Run workflow** in GitHub Actions (workflow_dispatch) performs the same tests
 and packaging but creates no release. Download those test packages from the
-workflow's artifacts. The full CI workflow separately covers watcher and
-external-language integration tests; the release gate covers core unit and
-stdio protocol tests without requiring extra language-server installations.
+workflow's artifacts. The full CI workflow covers external-language integration
+tests and a Linux race-detector run. The release gate covers all internal tests,
+including filesystem watchers and stdio protocol tests on all three platforms.
 
 No extra secrets are needed: only the publish job gets `contents: write`.
 The Go compiler version is pinned in the workflow. Update it deliberately.

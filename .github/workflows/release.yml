@@ -28,9 +28,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27.1'
-      # Watcher and external-language integration tests remain in the full CI workflow.
-      - name: Test reference protocol, URI handling and core helpers
-        run: go test -timeout 120s . ./internal/lsp ./internal/tools ./internal/utilities ./internal/logging ./cmd/...
+      # External-language integration tests run in the full CI workflow.
+      - name: Test protocol, diagnostics, file watching and core helpers
+        run: go test -timeout 120s . ./internal/... ./cmd/...
       - name: Vet changed runtime packages
         run: go vet . ./internal/lsp ./internal/tools
 
