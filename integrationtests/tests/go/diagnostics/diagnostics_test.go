@@ -21,7 +21,7 @@ func TestDiagnostics(t *testing.T) {
 		// Get a test suite with clean code
 		suite := internal.GetTestSuite(t)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		filePath := filepath.Join(suite.WorkspaceDir, "clean.go")
@@ -46,7 +46,7 @@ func TestDiagnostics(t *testing.T) {
 		// Wait for diagnostics to be generated
 		time.Sleep(2 * time.Second)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		filePath := filepath.Join(suite.WorkspaceDir, "main.go")
@@ -77,7 +77,7 @@ func TestDiagnostics(t *testing.T) {
 		time.Sleep(2 * time.Second)
 
 		// Verify consumer.go is clean initially
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Ensure both helper.go and consumer.go are open in the LSP

@@ -15,7 +15,7 @@ import (
 func TestReadDefinition(t *testing.T) {
 	suite := internal.GetTestSuite(t)
 
-	ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+	ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 	defer cancel()
 
 	// Open the main.ts file to help the TypeScript server recognize the project

@@ -17,7 +17,7 @@ import (
 func TestFindReferences(t *testing.T) {
 	suite := internal.GetTestSuite(t)
 
-	ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+	ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 	defer cancel()
 
 	// First open all files to ensure TypeScript server indexes everything

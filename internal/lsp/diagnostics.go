@@ -94,6 +94,13 @@ func (c *Client) DiagnosticsForFile(ctx context.Context, filePath string) ([]pro
 	}
 
 	for {
+		c.openFilesMu.RLock()
+		current := c.openFiles[string(uri)]
+		sameVersion := current != nil && current.Version == version
+		c.openFilesMu.RUnlock()
+		if !sameVersion {
+			return nil, fmt.Errorf("file changed while waiting for diagnostics; retry the request")
+		}
 		state, ok, changedSignal := c.diagnosticSnapshot(uri)
 		if ok {
 			if state.Version == version {

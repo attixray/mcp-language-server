@@ -72,6 +72,10 @@ func GetDiagnosticsForFile(ctx context.Context, client *lsp.Client, filePath str
 			Range: diag.Range,
 		})
 	}
+	result := fileInfo + strings.Join(diagSummaries, "\n") + "\n"
+	if !showLineNumbers {
+		return result, nil
+	}
 
 	// Format content with context
 	fileContent, err := os.ReadFile(filePath)
@@ -82,38 +86,18 @@ func GetDiagnosticsForFile(ctx context.Context, client *lsp.Client, filePath str
 	lines := strings.Split(string(fileContent), "\n")
 
 	// Collect lines to display
-	var linesToShow map[int]bool
-	if contextLines > 0 {
-		// Use GetLineRangesToDisplay for context
-		linesToShow, err = GetLineRangesToDisplay(ctx, client, diagLocations, len(lines), contextLines)
-		if err != nil {
-			// If error, just show the diagnostic lines
-			linesToShow = make(map[int]bool)
-			for _, diag := range diagnostics {
-				linesToShow[int(diag.Range.Start.Line)] = true
-			}
-		}
-	} else {
-		// Just show the diagnostic lines
-		linesToShow = make(map[int]bool)
-		for _, diag := range diagnostics {
-			linesToShow[int(diag.Range.Start.Line)] = true
+	linesToShow := make(map[int]bool)
+	for _, location := range diagLocations {
+		line := int(location.Range.Start.Line)
+		for i := max(0, line-contextLines); i <= min(len(lines)-1, line+contextLines); i++ {
+			linesToShow[i] = true
 		}
 	}
 
 	// Convert to line ranges
 	lineRanges := ConvertLinesToRanges(linesToShow, len(lines))
 
-	// Format with diagnostics summary in header
-	result := fileInfo
-	if len(diagSummaries) > 0 {
-		result += strings.Join(diagSummaries, "\n") + "\n"
-	}
-
-	// Format the content with ranges
-	if showLineNumbers {
-		result += "\n" + FormatLinesWithRanges(lines, lineRanges)
-	}
+	result += "\n" + FormatLinesWithRanges(lines, lineRanges)
 
 	return result, nil
 }

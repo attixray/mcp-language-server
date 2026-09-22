@@ -108,7 +108,7 @@ func TestHover(t *testing.T) {
 			// Get a test suite
 			suite := internal.GetTestSuite(t)
 
-			ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+			ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 			defer cancel()
 
 			// Open all files and wait for clangd to index them

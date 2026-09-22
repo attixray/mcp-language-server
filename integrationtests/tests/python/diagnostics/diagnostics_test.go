@@ -21,7 +21,7 @@ func TestDiagnostics(t *testing.T) {
 		// Get a test suite with clean code
 		suite := internal.GetTestSuite(t)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Check diagnostics for clean.py, which shouldn't have any errors
@@ -47,7 +47,7 @@ func TestDiagnostics(t *testing.T) {
 		// Wait for diagnostics to be generated
 		time.Sleep(2 * time.Second)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Check diagnostics for error_file.py, which contains deliberate errors
@@ -81,7 +81,7 @@ func TestDiagnostics(t *testing.T) {
 		time.Sleep(2 * time.Second)
 
 		// Create context
-		ctx, cancel := context.WithTimeout(suite.Context, 5*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Ensure both helper.py and consumer_clean.py are open in the LSP

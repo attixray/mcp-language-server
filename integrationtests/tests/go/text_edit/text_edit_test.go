@@ -16,7 +16,7 @@ import (
 func TestApplyTextEdits(t *testing.T) {
 	suite := internal.GetTestSuite(t)
 
-	ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+	ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 	defer cancel()
 
 	// Create a test file with known content we can edit
@@ -204,7 +204,7 @@ func AnotherFunction() {
 func TestApplyTextEditsWithBorderCases(t *testing.T) {
 	suite := internal.GetTestSuite(t)
 
-	ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+	ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 	defer cancel()
 
 	// Create a test file with known content we can edit

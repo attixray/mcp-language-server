@@ -74,7 +74,7 @@ func ApplyTextEdits(ctx context.Context, client *lsp.Client, filePath string, ed
 
 	edit := protocol.WorkspaceEdit{
 		Changes: map[protocol.DocumentUri][]protocol.TextEdit{
-			protocol.DocumentUri(filePath): textEdits,
+			protocol.URIFromPath(filePath): textEdits,
 		},
 	}
 

@@ -53,6 +53,7 @@ type Client struct {
 	// Files are currently opened by the LSP
 	openFiles   map[string]*OpenFileInfo
 	openFilesMu sync.RWMutex
+	fileSyncMu  sync.Mutex
 }
 
 func NewClient(command string, args ...string) (*Client, error) {
@@ -130,6 +131,8 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 	c.RegisterServerRequestHandler("workspace/applyEdit", HandleApplyEdit)
 	c.RegisterServerRequestHandler("workspace/configuration", HandleWorkspaceConfiguration)
 	c.RegisterServerRequestHandler("client/registerCapability", c.HandleRegisterCapability)
+	c.RegisterServerRequestHandler("client/unregisterCapability", c.HandleUnregisterCapability)
+	c.RegisterServerRequestHandler("workspace/diagnostic/refresh", func(json.RawMessage) (any, error) { return nil, nil })
 	c.RegisterNotificationHandler("window/showMessage", HandleServerMessage)
 	c.RegisterNotificationHandler("textDocument/publishDiagnostics",
 		func(params json.RawMessage) { HandleDiagnostics(c, params) })
@@ -305,134 +308,87 @@ func (c *Client) OpenFile(ctx context.Context, filepath string) error {
 	return err
 }
 
-func (c *Client) ensureFileOpen(ctx context.Context, filepath string) (int32, bool, error) {
-	uri := string(protocol.URIFromPath(filepath))
-	c.openFilesMu.Lock()
-	defer c.openFilesMu.Unlock()
+func (c *Client) ensureFileOpen(ctx context.Context, filePath string) (int32, bool, error) {
+	return c.syncFile(ctx, filePath, false)
+}
 
-	// Skip files that do not exist or cannot be read
-	content, err := os.ReadFile(filepath)
+// Serialize document lifecycle operations without holding a state lock during
+// pipe writes: the receive loop must remain able to handle diagnostics.
+func (c *Client) syncFile(ctx context.Context, filePath string, requireOpen bool) (int32, bool, error) {
+	c.fileSyncMu.Lock()
+	defer c.fileSyncMu.Unlock()
+	uri := protocol.URIFromPath(filePath)
+	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return 0, false, fmt.Errorf("error reading file: %w", err)
 	}
+	c.openFilesMu.RLock()
+	previous := c.openFiles[string(uri)]
+	c.openFilesMu.RUnlock()
+	if previous == nil && requireOpen {
+		return 0, false, fmt.Errorf("cannot notify change for unopened file: %s", filePath)
+	}
 	text := string(content)
-
-	if fileInfo, exists := c.openFiles[uri]; exists {
-		if fileInfo.Text == text {
-			return fileInfo.Version, false, nil
-		}
-		version := fileInfo.Version + 1
-		params := protocol.DidChangeTextDocumentParams{
-			TextDocument: protocol.VersionedTextDocumentIdentifier{
-				TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: fileInfo.URI},
-				Version:                version,
-			},
-			ContentChanges: []protocol.TextDocumentContentChangeEvent{{
-				Value: protocol.TextDocumentContentChangeWholeDocument{Text: text},
-			}},
-		}
-		if err := c.Notify(ctx, "textDocument/didChange", params); err != nil {
-			return fileInfo.Version, false, err
-		}
-		fileInfo.Version = version
-		fileInfo.Text = text
-		return version, true, nil
+	if previous != nil && previous.Text == text {
+		return previous.Version, false, nil
 	}
-
-	params := protocol.DidOpenTextDocumentParams{
-		TextDocument: protocol.TextDocumentItem{
-			URI:        protocol.DocumentUri(uri),
-			LanguageID: DetectLanguageID(uri),
-			Version:    1,
-			Text:       text,
-		},
+	version := int32(1)
+	if previous != nil {
+		version = previous.Version + 1
 	}
+	current := &OpenFileInfo{Version: version, URI: uri, Text: text}
+	c.openFilesMu.Lock()
+	c.openFiles[string(uri)] = current
+	c.openFilesMu.Unlock()
 	c.diagnosticsMu.Lock()
-	delete(c.diagnostics, protocol.DocumentUri(uri))
+	delete(c.diagnostics, uri)
 	c.diagnosticsMu.Unlock()
-
-	if err := c.Notify(ctx, "textDocument/didOpen", params); err != nil {
+	if previous == nil {
+		err = c.Notify(ctx, "textDocument/didOpen", protocol.DidOpenTextDocumentParams{
+			TextDocument: protocol.TextDocumentItem{URI: uri, LanguageID: DetectLanguageID(string(uri)), Version: version, Text: text},
+		})
+	} else {
+		err = c.Notify(ctx, "textDocument/didChange", protocol.DidChangeTextDocumentParams{
+			TextDocument:   protocol.VersionedTextDocumentIdentifier{TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri}, Version: version},
+			ContentChanges: []protocol.TextDocumentContentChangeEvent{{Value: protocol.TextDocumentContentChangeWholeDocument{Text: text}}},
+		})
+	}
+	if err != nil {
+		c.openFilesMu.Lock()
+		if previous == nil {
+			delete(c.openFiles, string(uri))
+		} else {
+			c.openFiles[string(uri)] = previous
+		}
+		c.openFilesMu.Unlock()
 		return 0, false, err
 	}
-
-	c.openFiles[uri] = &OpenFileInfo{
-		Version: 1,
-		URI:     protocol.DocumentUri(uri),
-		Text:    text,
-	}
-
-	lspLogger.Debug("Opened file: %s", filepath)
-
-	return 1, true, nil
+	return version, true, nil
 }
 
-func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
-	uri := string(protocol.URIFromPath(filepath))
+func (c *Client) NotifyChange(ctx context.Context, filePath string) error {
+	_, _, err := c.syncFile(ctx, filePath, true)
+	return err
+}
+
+func (c *Client) CloseFile(ctx context.Context, filePath string) error {
+	c.fileSyncMu.Lock()
+	defer c.fileSyncMu.Unlock()
+	uri := protocol.URIFromPath(filePath)
 	c.openFilesMu.Lock()
-	defer c.openFilesMu.Unlock()
-
-	content, err := os.ReadFile(filepath)
-	if err != nil {
-		return fmt.Errorf("error reading file: %w", err)
-	}
-
-	fileInfo, isOpen := c.openFiles[uri]
-	if !isOpen {
-		return fmt.Errorf("cannot notify change for unopened file: %s", filepath)
-	}
-	text := string(content)
-	if fileInfo.Text == text {
+	previous := c.openFiles[string(uri)]
+	delete(c.openFiles, string(uri))
+	c.openFilesMu.Unlock()
+	if previous == nil {
 		return nil
 	}
-
-	version := fileInfo.Version + 1
-
-	params := protocol.DidChangeTextDocumentParams{
-		TextDocument: protocol.VersionedTextDocumentIdentifier{
-			TextDocumentIdentifier: protocol.TextDocumentIdentifier{
-				URI: protocol.DocumentUri(uri),
-			},
-			Version: version,
-		},
-		ContentChanges: []protocol.TextDocumentContentChangeEvent{
-			{
-				Value: protocol.TextDocumentContentChangeWholeDocument{
-					Text: text,
-				},
-			},
-		},
+	err := c.Notify(ctx, "textDocument/didClose", protocol.DidCloseTextDocumentParams{TextDocument: protocol.TextDocumentIdentifier{URI: uri}})
+	if err != nil {
+		c.openFilesMu.Lock()
+		c.openFiles[string(uri)] = previous
+		c.openFilesMu.Unlock()
 	}
-
-	if err := c.Notify(ctx, "textDocument/didChange", params); err != nil {
-		return err
-	}
-	fileInfo.Version = version
-	fileInfo.Text = text
-	return nil
-}
-
-func (c *Client) CloseFile(ctx context.Context, filepath string) error {
-	uri := string(protocol.URIFromPath(filepath))
-
-	c.openFilesMu.Lock()
-	defer c.openFilesMu.Unlock()
-	if _, exists := c.openFiles[uri]; !exists {
-		return nil // Already closed
-	}
-
-	params := protocol.DidCloseTextDocumentParams{
-		TextDocument: protocol.TextDocumentIdentifier{
-			URI: protocol.DocumentUri(uri),
-		},
-	}
-	lspLogger.Debug("Closing file: %s", params.TextDocument.URI.Dir())
-	if err := c.Notify(ctx, "textDocument/didClose", params); err != nil {
-		return err
-	}
-
-	delete(c.openFiles, uri)
-
-	return nil
+	return err
 }
 
 func (c *Client) IsFileOpen(filepath string) bool {

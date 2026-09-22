@@ -162,3 +162,24 @@ func TestDiagnosticsPullErrorIsNotClean(t *testing.T) {
 		t.Fatalf("expected server error: %v", err)
 	}
 }
+
+func TestDiagnosticServerCancellationRetryFlag(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no retry", true: "retry"}[retry], func(t *testing.T) {
+			c := diagnosticTestClient(t, func(msg *Message) []*Message {
+				if msg.ID.String() == "1" {
+					data, _ := json.Marshal(map[string]bool{"retriggerRequest": retry})
+					return []*Message{{JSONRPC: "2.0", ID: msg.ID, Error: &ResponseError{Code: -32802, Message: "server cancelled", Data: data}}}
+				}
+				return []*Message{{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage(`{"kind":"full","items":[]}`)}}
+			})
+			err := c.Call(context.Background(), "textDocument/diagnostic", nil, nil)
+			if retry && (err != nil || c.nextID.Load() != 2) {
+				t.Fatalf("requested retry did not succeed: %v", err)
+			}
+			if !retry && (err == nil || c.nextID.Load() != 1) {
+				t.Fatalf("retried without permission: %v", err)
+			}
+		})
+	}
+}

@@ -213,7 +213,19 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	for attempt := 0; ; attempt++ {
 		err := c.callOnce(ctx, method, params, result)
 		var responseError *ResponseError
-		if !readOnly || attempt >= 3 || !errors.As(err, &responseError) || responseError.Code != -32801 {
+		if !readOnly || attempt >= 3 || !errors.As(err, &responseError) {
+			return err
+		}
+		retry := responseError.Code == -32801
+		if method == "textDocument/diagnostic" && responseError.Code == -32802 {
+			var data struct {
+				RetriggerRequest bool `json:"retriggerRequest"`
+			}
+			if json.Unmarshal(responseError.Data, &data) == nil {
+				retry = data.RetriggerRequest
+			}
+		}
+		if !retry {
 			return err
 		}
 		timer := time.NewTimer(time.Duration(1<<attempt) * 100 * time.Millisecond)

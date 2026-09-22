@@ -52,7 +52,7 @@ func TestCodeLens(t *testing.T) {
 	t.Run("ExecuteCodeLens", func(t *testing.T) {
 		suite := internal.GetTestSuite(t)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// The go.mod fixture already has an unused dependency

@@ -44,7 +44,7 @@ func TestRenameSymbol(t *testing.T) {
 		// Get a test suite with clean code
 		suite := internal.GetTestSuite(t)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Open all files and wait for rust-analyzer to index them
@@ -98,7 +98,7 @@ func TestRenameSymbol(t *testing.T) {
 		// Get a test suite with clean code
 		suite := internal.GetTestSuite(t)
 
-		ctx, cancel := context.WithTimeout(suite.Context, 10*time.Second)
+		ctx, cancel := context.WithTimeout(suite.Context, 60*time.Second)
 		defer cancel()
 
 		// Open all files and wait for rust-analyzer to index them

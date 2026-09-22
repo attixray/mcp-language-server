@@ -97,6 +97,26 @@ func HandleApplyEdit(params json.RawMessage) (any, error) {
 	}, nil
 }
 
+func (c *Client) HandleUnregisterCapability(params json.RawMessage) (any, error) {
+	var request struct {
+		Unregistrations []protocol.Unregistration `json:"unregisterations"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return nil, err
+	}
+	c.fileWatchMu.Lock()
+	defer c.fileWatchMu.Unlock()
+	for _, reg := range request.Unregistrations {
+		if reg.Method == "workspace/didChangeWatchedFiles" {
+			delete(c.fileWatchRegistrations, reg.ID)
+			if c.fileWatchHandler != nil {
+				c.fileWatchHandler(reg.ID, nil)
+			}
+		}
+	}
+	return nil, nil
+}
+
 func workspaceEditFailure(err error) string {
 	if err == nil {
 		return ""
