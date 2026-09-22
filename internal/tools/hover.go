@@ -50,6 +50,9 @@ func GetHoverInfo(ctx context.Context, client *lsp.Client, filePath string, line
 			lines := strings.Split(string(content), "\n")
 			if int(position.Line) < len(lines) {
 				lineText = strings.TrimSuffix(lines[position.Line], "\r")
+				if int(position.Line) < len(lines)-1 {
+					lineText += "\n"
+				}
 			}
 		}
 		result.WriteString(fmt.Sprintf("No hover information available for this position on the following line:\n%s", lineText))
