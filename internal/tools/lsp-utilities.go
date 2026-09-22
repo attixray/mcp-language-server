@@ -143,6 +143,17 @@ func GetLineRangesToDisplay(ctx context.Context, client *lsp.Client, locations [
 	// Set to track which lines need to be displayed
 	linesToShow := make(map[int]bool)
 
+	// Reference lines need no container lookup when context is disabled.
+	if contextLines == 0 {
+		for _, loc := range locations {
+			line := int(loc.Range.Start.Line)
+			if line >= 0 && line < totalLines {
+				linesToShow[line] = true
+			}
+		}
+		return linesToShow, nil
+	}
+
 	// For each location, get its container and add relevant lines
 	for _, loc := range locations {
 		// Use GetFullDefinition to find container
