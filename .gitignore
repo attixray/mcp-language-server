@@ -1,5 +1,6 @@
 # Binary
 mcp-language-server
+dist/
 
 # Test output
 test-output/

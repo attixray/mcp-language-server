@@ -1,5 +1,9 @@
 # MCP Language Server
 
+Fork binaries for Windows, Linux and macOS are available from
+[attixray releases](https://github.com/attixray/mcp-language-server/releases).
+See [RELEASING.md](RELEASING.md) for automated builds, checksums and release tags.
+
 [![Go Tests](https://github.com/isaacphi/mcp-language-server/actions/workflows/go.yml/badge.svg)](https://github.com/isaacphi/mcp-language-server/actions/workflows/go.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/isaacphi/mcp-language-server)](https://goreportcard.com/report/github.com/isaacphi/mcp-language-server)
 [![GoDoc](https://pkg.go.dev/badge/github.com/isaacphi/mcp-language-server)](https://pkg.go.dev/github.com/isaacphi/mcp-language-server)
