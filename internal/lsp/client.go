@@ -118,7 +118,7 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 		WorkspaceFoldersInitializeParams: protocol.WorkspaceFoldersInitializeParams{
 			WorkspaceFolders: []protocol.WorkspaceFolder{
 				{
-					URI:  protocol.URI("file://" + workspaceDir),
+					URI:  protocol.URI(protocol.URIFromPath(workspaceDir)),
 					Name: workspaceDir,
 				},
 			},
@@ -131,7 +131,7 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 				Version: "0.1.0",
 			},
 			RootPath: workspaceDir,
-			RootURI:  protocol.DocumentUri("file://" + workspaceDir),
+			RootURI:  protocol.URIFromPath(workspaceDir),
 			Capabilities: protocol.ClientCapabilities{
 				Workspace: protocol.WorkspaceClientCapabilities{
 					Configuration: true,
@@ -287,7 +287,7 @@ type OpenFileInfo struct {
 }
 
 func (c *Client) OpenFile(ctx context.Context, filepath string) error {
-	uri := fmt.Sprintf("file://%s", filepath)
+	uri := string(protocol.URIFromPath(filepath))
 
 	c.openFilesMu.Lock()
 	if _, exists := c.openFiles[uri]; exists {
@@ -328,7 +328,7 @@ func (c *Client) OpenFile(ctx context.Context, filepath string) error {
 }
 
 func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
-	uri := fmt.Sprintf("file://%s", filepath)
+	uri := string(protocol.URIFromPath(filepath))
 
 	content, err := os.ReadFile(filepath)
 	if err != nil {
@@ -367,7 +367,7 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
 }
 
 func (c *Client) CloseFile(ctx context.Context, filepath string) error {
-	uri := fmt.Sprintf("file://%s", filepath)
+	uri := string(protocol.URIFromPath(filepath))
 
 	c.openFilesMu.Lock()
 	if _, exists := c.openFiles[uri]; !exists {
@@ -394,7 +394,7 @@ func (c *Client) CloseFile(ctx context.Context, filepath string) error {
 }
 
 func (c *Client) IsFileOpen(filepath string) bool {
-	uri := fmt.Sprintf("file://%s", filepath)
+	uri := string(protocol.URIFromPath(filepath))
 	c.openFilesMu.RLock()
 	defer c.openFilesMu.RUnlock()
 	_, exists := c.openFiles[uri]
@@ -408,8 +408,8 @@ func (c *Client) CloseAllFiles(ctx context.Context) {
 
 	// First collect all URIs that need to be closed
 	for uri := range c.openFiles {
-		// Convert URI back to file path by trimming "file://" prefix
-		filePath := strings.TrimPrefix(uri, "file://")
+		// Decode escaped paths and Windows drive letters before closing.
+		filePath := protocol.DocumentUri(uri).Path()
 		filesToClose = append(filesToClose, filePath)
 	}
 	c.openFilesMu.Unlock()
