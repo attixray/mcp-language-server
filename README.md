@@ -171,6 +171,7 @@ This is an [MCP](https://modelcontextprotocol.io/introduction) server that runs 
 
 - `definition`: Retrieves the complete source code definition of any symbol (function, type, constant, etc.) from your codebase.
 - `references`: Locates all usages and references of a symbol throughout the codebase.
+- `references_at`: Finds references using `filePath`, `line` and `column` instead of searching the workspace by name. Line and column are 1-based; column counts UTF-16 code units. Use `LSP_CONTEXT_LINES=0` to skip enclosing-symbol lookups and return only reference lines. Existing `references` calls remain supported.
 - `diagnostics`: Provides diagnostic information for a specific file, including warnings and errors.
 - `hover`: Display documentation, type hints, or other hover information for a given location.
 - `rename_symbol`: Rename a symbol across a project.

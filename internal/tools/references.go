@@ -13,14 +13,6 @@ import (
 )
 
 func FindReferences(ctx context.Context, client *lsp.Client, symbolName string) (string, error) {
-	// Get context lines from environment variable
-	contextLines := 5
-	if envLines := os.Getenv("LSP_CONTEXT_LINES"); envLines != "" {
-		if val, err := strconv.Atoi(envLines); err == nil && val >= 0 {
-			contextLines = val
-		}
-	}
-
 	// First get the symbol location like ReadDefinition does
 	symbolResult, err := client.Symbol(ctx, protocol.WorkspaceSymbolParams{
 		Query: symbolName,
@@ -34,7 +26,7 @@ func FindReferences(ctx context.Context, client *lsp.Client, symbolName string) 
 		return "", fmt.Errorf("failed to parse results: %v", err)
 	}
 
-	var allReferences []string
+	var locations []protocol.Location
 	for _, symbol := range results {
 		// Handle different matching strategies based on the search term
 		if strings.Contains(symbolName, ".") {
@@ -51,9 +43,39 @@ func FindReferences(ctx context.Context, client *lsp.Client, symbolName string) 
 			continue
 		}
 
-		// Get the location of the symbol
-		loc := symbol.GetLocation()
+		locations = append(locations, symbol.GetLocation())
+	}
+	return findReferencesAtLocations(ctx, client, locations, symbolName)
+}
 
+// FindReferencesAt skips workspace-wide symbol search when the source position is known.
+// Line and column are 1-based; columns use UTF-16 code units, as in LSP.
+func FindReferencesAt(ctx context.Context, client *lsp.Client, filePath string, line, column int) (string, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return "", fmt.Errorf("filePath must not be empty")
+	}
+	if line < 1 || column < 1 || int64(line) > 2147483647 || int64(column) > 2147483647 {
+		return "", fmt.Errorf("line and column must be positive 1-based integers no greater than 2147483647")
+	}
+	position := protocol.Position{Line: uint32(line - 1), Character: uint32(column - 1)}
+	location := protocol.Location{
+		URI:   protocol.URIFromPath(filePath),
+		Range: protocol.Range{Start: position, End: position},
+	}
+	return findReferencesAtLocations(ctx, client, []protocol.Location{location}, fmt.Sprintf("%s:%d:%d", filePath, line, column))
+}
+
+func findReferencesAtLocations(ctx context.Context, client *lsp.Client, locations []protocol.Location, description string) (string, error) {
+	// Get context lines from environment variable
+	contextLines := 5
+	if envLines := os.Getenv("LSP_CONTEXT_LINES"); envLines != "" {
+		if val, err := strconv.Atoi(envLines); err == nil && val >= 0 {
+			contextLines = val
+		}
+	}
+
+	var allReferences []string
+	for _, loc := range locations {
 		// Use LSP references request with correct params structure
 		refsParams := protocol.ReferenceParams{
 			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -69,8 +91,7 @@ func FindReferences(ctx context.Context, client *lsp.Client, symbolName string) 
 		// File is likely to be opened already, but may not be.
 		err := client.OpenFile(ctx, loc.URI.Path())
 		if err != nil {
-			toolsLogger.Error("Error opening file: %v", err)
-			continue
+			return "", fmt.Errorf("could not open reference source: %w", err)
 		}
 		refs, err := client.References(ctx, refsParams)
 		if err != nil {
@@ -144,7 +165,7 @@ func FindReferences(ctx context.Context, client *lsp.Client, symbolName string) 
 	}
 
 	if len(allReferences) == 0 {
-		return fmt.Sprintf("No references found for symbol: %s", symbolName), nil
+		return fmt.Sprintf("No references found for symbol: %s", description), nil
 	}
 
 	return strings.Join(allReferences, "\n"), nil

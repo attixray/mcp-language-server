@@ -143,6 +143,24 @@ func (s *mcpServer) registerTools() error {
 		return mcp.NewToolResultText(text), nil
 	})
 
+	findReferencesAtTool := mcp.NewTool("references_at",
+		mcp.WithDescription("Find references at a known source position without a workspace-wide name search. Returns the same file locations and context as references. Set LSP_CONTEXT_LINES=0 to return reference lines without container lookups."),
+		mcp.WithString("filePath", mcp.Required(), mcp.Description("Path to the source file containing the symbol")),
+		mcp.WithNumber("line", mcp.Required(), mcp.Description("1-based line number")),
+		mcp.WithNumber("column", mcp.Required(), mcp.Description("1-based column in UTF-16 code units")),
+	)
+	s.mcpServer.AddTool(findReferencesAtTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		filePath, line, column, err := referencePositionArguments(request.Params.Arguments)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		text, err := tools.FindReferencesAt(ctx, s.lspClient, filePath, line, column)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to find references: %v", err)), nil
+		}
+		return mcp.NewToolResultText(text), nil
+	})
+
 	getDiagnosticsTool := mcp.NewTool("diagnostics",
 		mcp.WithDescription("Get diagnostic information for a specific file from the language server."),
 		mcp.WithString("filePath",

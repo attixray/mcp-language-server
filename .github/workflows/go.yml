@@ -31,7 +31,7 @@ jobs:
         run: go install golang.org/x/tools/gopls@latest
 
       - name: Run unit tests
-        run: go test ./internal/...
+        run: go test . ./internal/...
 
       - name: Run code quality checks
         run: just check
