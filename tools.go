@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/isaacphi/mcp-language-server/internal/tools"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -87,7 +88,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing edit_file for file: %s", filePath)
-		response, err := tools.ApplyTextEdits(s.ctx, s.lspClient, filePath, edits)
+		response, err := tools.ApplyTextEdits(ctx, s.lspClient, filePath, edits)
 		if err != nil {
 			coreLogger.Error("Failed to apply edits: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to apply edits: %v", err)), nil
@@ -111,7 +112,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing definition for symbol: %s", symbolName)
-		text, err := tools.ReadDefinition(s.ctx, s.lspClient, symbolName)
+		text, err := tools.ReadDefinition(ctx, s.lspClient, symbolName)
 		if err != nil {
 			coreLogger.Error("Failed to get definition: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get definition: %v", err)), nil
@@ -135,7 +136,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing references for symbol: %s", symbolName)
-		text, err := tools.FindReferences(s.ctx, s.lspClient, symbolName)
+		text, err := tools.FindReferences(ctx, s.lspClient, symbolName)
 		if err != nil {
 			coreLogger.Error("Failed to find references: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to find references: %v", err)), nil
@@ -167,9 +168,9 @@ func (s *mcpServer) registerTools() error {
 			mcp.Required(),
 			mcp.Description("The path to the file to get diagnostics for"),
 		),
-		mcp.WithBoolean("contextLines",
+		mcp.WithNumber("contextLines",
 			mcp.Description("Lines to include around each diagnostic."),
-			mcp.DefaultBool(false),
+			mcp.DefaultNumber(5),
 		),
 		mcp.WithBoolean("showLineNumbers",
 			mcp.Description("If true, adds line numbers to the output"),
@@ -185,8 +186,20 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		contextLines := 5 // default value
-		if contextLinesArg, ok := request.Params.Arguments["contextLines"].(int); ok {
-			contextLines = contextLinesArg
+		if raw, exists := request.Params.Arguments["contextLines"]; exists {
+			var value float64
+			switch v := raw.(type) {
+			case int:
+				value = float64(v)
+			case float64:
+				value = v
+			default:
+				return mcp.NewToolResultError("contextLines must be a non-negative integer"), nil
+			}
+			if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > math.MaxInt32 || math.Trunc(value) != value {
+				return mcp.NewToolResultError("contextLines must be a non-negative integer no greater than 2147483647"), nil
+			}
+			contextLines = int(value)
 		}
 
 		showLineNumbers := true // default value
@@ -195,7 +208,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing diagnostics for file: %s", filePath)
-		text, err := tools.GetDiagnosticsForFile(s.ctx, s.lspClient, filePath, contextLines, showLineNumbers)
+		text, err := tools.GetDiagnosticsForFile(ctx, s.lspClient, filePath, contextLines, showLineNumbers)
 		if err != nil {
 			coreLogger.Error("Failed to get diagnostics: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get diagnostics: %v", err)), nil
@@ -221,7 +234,7 @@ func (s *mcpServer) registerTools() error {
 	// 	}
 	//
 	// 	coreLogger.Debug("Executing get_codelens for file: %s", filePath)
-	// 	text, err := tools.GetCodeLens(s.ctx, s.lspClient, filePath)
+	// 	text, err := tools.GetCodeLens(ctx, s.lspClient, filePath)
 	// 	if err != nil {
 	// 		coreLogger.Error("Failed to get code lens: %v", err)
 	// 		return mcp.NewToolResultError(fmt.Sprintf("failed to get code lens: %v", err)), nil
@@ -260,7 +273,7 @@ func (s *mcpServer) registerTools() error {
 	// 	}
 	//
 	// 	coreLogger.Debug("Executing execute_codelens for file: %s index: %d", filePath, index)
-	// 	text, err := tools.ExecuteCodeLens(s.ctx, s.lspClient, filePath, index)
+	// 	text, err := tools.ExecuteCodeLens(ctx, s.lspClient, filePath, index)
 	// 	if err != nil {
 	// 		coreLogger.Error("Failed to execute code lens: %v", err)
 	// 		return mcp.NewToolResultError(fmt.Sprintf("failed to execute code lens: %v", err)), nil
@@ -312,7 +325,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing hover for file: %s line: %d column: %d", filePath, line, column)
-		text, err := tools.GetHoverInfo(s.ctx, s.lspClient, filePath, line, column)
+		text, err := tools.GetHoverInfo(ctx, s.lspClient, filePath, line, column)
 		if err != nil {
 			coreLogger.Error("Failed to get hover information: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get hover information: %v", err)), nil
@@ -373,7 +386,7 @@ func (s *mcpServer) registerTools() error {
 		}
 
 		coreLogger.Debug("Executing rename_symbol for file: %s line: %d column: %d newName: %s", filePath, line, column, newName)
-		text, err := tools.RenameSymbol(s.ctx, s.lspClient, filePath, line, column, newName)
+		text, err := tools.RenameSymbol(ctx, s.lspClient, filePath, line, column, newName)
 		if err != nil {
 			coreLogger.Error("Failed to rename symbol: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to rename symbol: %v", err)), nil

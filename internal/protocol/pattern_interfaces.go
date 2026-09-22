@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"fmt"
-	"strings"
 )
 
 // PatternInfo is an interface for types that represent glob patterns
@@ -45,9 +44,11 @@ func (g *GlobPattern) AsPattern() (PatternInfo, error) {
 		basePath := ""
 		switch baseURI := v.BaseURI.Value.(type) {
 		case string:
-			basePath = strings.TrimPrefix(baseURI, "file://")
+			basePath = DocumentUri(baseURI).Path()
 		case DocumentUri:
-			basePath = strings.TrimPrefix(string(baseURI), "file://")
+			basePath = baseURI.Path()
+		case WorkspaceFolder:
+			basePath = DocumentUri(baseURI.URI).Path()
 		default:
 			return nil, fmt.Errorf("unknown BaseURI type: %T", v.BaseURI.Value)
 		}

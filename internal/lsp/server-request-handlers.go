@@ -10,21 +10,31 @@ import (
 // FileWatchHandler is called when file watchers are registered by the server
 type FileWatchHandler func(id string, watchers []protocol.FileSystemWatcher)
 
-// fileWatchHandler holds the current file watch handler
-var fileWatchHandler FileWatchHandler
-
 // RegisterFileWatchHandler registers a handler for file watcher registrations
-func RegisterFileWatchHandler(handler FileWatchHandler) {
-	fileWatchHandler = handler
+func (c *Client) RegisterFileWatchHandler(handler FileWatchHandler) {
+	c.fileWatchMu.Lock()
+	defer c.fileWatchMu.Unlock()
+	c.fileWatchHandler = handler
+	for id, watchers := range c.fileWatchRegistrations {
+		handler(id, watchers)
+	}
 }
 
 // Requests
 
 func HandleWorkspaceConfiguration(params json.RawMessage) (any, error) {
-	return []map[string]any{{}}, nil
+	var request protocol.ConfigurationParams
+	if err := json.Unmarshal(params, &request); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, len(request.Items))
+	for i := range result {
+		result[i] = map[string]any{}
+	}
+	return result, nil
 }
 
-func HandleRegisterCapability(params json.RawMessage) (any, error) {
+func (c *Client) HandleRegisterCapability(params json.RawMessage) (any, error) {
 	var registerParams protocol.RegistrationParams
 	if err := json.Unmarshal(params, &registerParams); err != nil {
 		lspLogger.Error("Error unmarshaling registration params: %v", err)
@@ -51,9 +61,15 @@ func HandleRegisterCapability(params json.RawMessage) (any, error) {
 			}
 
 			// Notify file watchers
-			if fileWatchHandler != nil {
-				fileWatchHandler(reg.ID, opts.Watchers)
+			c.fileWatchMu.Lock()
+			if c.fileWatchRegistrations == nil {
+				c.fileWatchRegistrations = make(map[string][]protocol.FileSystemWatcher)
 			}
+			c.fileWatchRegistrations[reg.ID] = opts.Watchers
+			if c.fileWatchHandler != nil {
+				c.fileWatchHandler(reg.ID, opts.Watchers)
+			}
+			c.fileWatchMu.Unlock()
 		}
 	}
 
@@ -119,10 +135,27 @@ func HandleDiagnostics(client *Client, params json.RawMessage) {
 		return
 	}
 
-	// Save diagnostics in client
-	client.diagnosticsMu.Lock()
-	client.diagnostics[diagParams.URI] = diagParams.Diagnostics
-	client.diagnosticsMu.Unlock()
+	var metadata struct {
+		Version *int32 `json:"version"`
+	}
+	if err := json.Unmarshal(params, &metadata); err != nil {
+		lspLogger.Error("Error unmarshaling diagnostic metadata: %v", err)
+		return
+	}
+
+	client.openFilesMu.RLock()
+	defer client.openFilesMu.RUnlock()
+	openFile := client.openFiles[string(diagParams.URI)]
+	if openFile == nil {
+		return // Diagnostics from a previous open/close cycle are not reusable.
+	}
+	if metadata.Version != nil && *metadata.Version != openFile.Version {
+		return
+	}
+	// Servers may omit the version. Associate those publications with the
+	// synchronized version at receipt; the protocol cannot prove their age.
+	version := openFile.Version
+	client.storeDiagnostics(diagParams.URI, diagParams.Diagnostics, version)
 
 	lspLogger.Info("Received diagnostics for %s: %d items", diagParams.URI, len(diagParams.Diagnostics))
 }

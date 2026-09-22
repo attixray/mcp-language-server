@@ -13,9 +13,6 @@ import (
 
 // TestGitignorePatterns specifically tests the gitignore pattern integration
 func TestGitignorePatterns(t *testing.T) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping filesystem watcher tests in GitHub Actions environment")
-	}
 	// Set up a test workspace in a temporary directory
 	testDir, err := os.MkdirTemp("", "watcher-gitignore-patterns-*")
 	if err != nil {
@@ -69,10 +66,14 @@ exact_file.txt
 	defer cancel()
 
 	// Start watching the workspace
-	go testWatcher.WatchWorkspace(ctx, testDir)
-
-	// Give the watcher time to initialize
-	time.Sleep(500 * time.Millisecond)
+	watcherDone := make(chan struct{})
+	go func() { defer close(watcherDone); testWatcher.WatchWorkspace(ctx, testDir) }()
+	defer func() { cancel(); <-watcherDone }()
+	select {
+	case <-testWatcher.Ready():
+	case <-ctx.Done():
+		t.Fatal("watcher failed to initialize")
+	}
 
 	// Add watcher registrations
 	testWatcher.AddRegistrations(ctx, "test-id", watchers)
@@ -187,11 +188,11 @@ exact_file.txt
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
 
-		if !mockClient.WaitForEvent(waitCtx) {
+		if !mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Created) {
 			t.Fatal("Timed out waiting for file creation event")
 		}
 
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for non-ignored file %s", filePath)

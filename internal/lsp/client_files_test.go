@@ -30,7 +30,10 @@ func TestFileLifecycleUsesCanonicalURI(t *testing.T) {
 	if !c.IsFileOpen(path) {
 		t.Fatal("file not registered as open")
 	}
-	if err := c.NotifyChange(ctx, path); err != nil {
+	if err := os.WriteFile(path, []byte("class Updated {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.OpenFile(ctx, path); err != nil {
 		t.Fatal(err)
 	}
 	c.CloseAllFiles(ctx)

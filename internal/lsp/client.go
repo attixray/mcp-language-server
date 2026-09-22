@@ -37,12 +37,18 @@ type Client struct {
 	serverHandlersMu      sync.RWMutex
 
 	// Notification handlers
-	notificationHandlers map[string]NotificationHandler
-	notificationMu       sync.RWMutex
+	notificationHandlers   map[string]NotificationHandler
+	notificationMu         sync.RWMutex
+	fileWatchMu            sync.Mutex
+	fileWatchHandler       FileWatchHandler
+	fileWatchRegistrations map[string][]protocol.FileSystemWatcher
 
 	// Diagnostic cache
-	diagnostics   map[protocol.DocumentUri][]protocol.Diagnostic
-	diagnosticsMu sync.RWMutex
+	diagnostics          map[protocol.DocumentUri]diagnosticState
+	diagnosticsChanged   chan struct{}
+	diagnosticsMu        sync.RWMutex
+	pullDiagnostics      atomic.Bool
+	diagnosticIdentifier string
 
 	// Files are currently opened by the LSP
 	openFiles   map[string]*OpenFileInfo
@@ -77,7 +83,8 @@ func NewClient(command string, args ...string) (*Client, error) {
 		handlers:              make(map[string]chan *Message),
 		notificationHandlers:  make(map[string]NotificationHandler),
 		serverRequestHandlers: make(map[string]ServerRequestHandler),
-		diagnostics:           make(map[protocol.DocumentUri][]protocol.Diagnostic),
+		diagnostics:           make(map[protocol.DocumentUri]diagnosticState),
+		diagnosticsChanged:    make(chan struct{}),
 		openFiles:             make(map[string]*OpenFileInfo),
 		done:                  make(chan struct{}),
 	}
@@ -118,6 +125,15 @@ func (c *Client) RegisterServerRequestHandler(method string, handler ServerReque
 }
 
 func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (*protocol.InitializeResult, error) {
+	// Register handlers before initialize completes so the server cannot race its
+	// first request or notification against handler setup.
+	c.RegisterServerRequestHandler("workspace/applyEdit", HandleApplyEdit)
+	c.RegisterServerRequestHandler("workspace/configuration", HandleWorkspaceConfiguration)
+	c.RegisterServerRequestHandler("client/registerCapability", c.HandleRegisterCapability)
+	c.RegisterNotificationHandler("window/showMessage", HandleServerMessage)
+	c.RegisterNotificationHandler("textDocument/publishDiagnostics",
+		func(params json.RawMessage) { HandleDiagnostics(c, params) })
+
 	initParams := &protocol.InitializeParams{
 		WorkspaceFoldersInitializeParams: protocol.WorkspaceFoldersInitializeParams{
 			WorkspaceFolders: []protocol.WorkspaceFolder{
@@ -169,6 +185,7 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 					PublishDiagnostics: protocol.PublishDiagnosticsClientCapabilities{
 						VersionSupport: true,
 					},
+					Diagnostic: &protocol.DiagnosticClientCapabilities{},
 					SemanticTokens: protocol.SemanticTokensClientCapabilities{
 						Requests: protocol.ClientSemanticTokensRequestOptions{
 							Range: &protocol.Or_ClientSemanticTokensRequestOptions_range{},
@@ -199,18 +216,18 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 	if err := c.Call(ctx, "initialize", initParams, &result); err != nil {
 		return nil, fmt.Errorf("initialize failed: %w", err)
 	}
-
-	if err := c.Notify(ctx, "initialized", struct{}{}); err != nil {
-		return nil, fmt.Errorf("initialized notification failed: %w", err)
+	c.pullDiagnostics.Store(result.Capabilities.DiagnosticProvider != nil)
+	if provider := result.Capabilities.DiagnosticProvider; provider != nil {
+		data, err := json.Marshal(provider)
+		if err != nil {
+			return nil, err
+		}
+		var options protocol.DiagnosticOptions
+		if err := json.Unmarshal(data, &options); err != nil {
+			return nil, err
+		}
+		c.diagnosticIdentifier = options.Identifier
 	}
-
-	// Register handlers
-	c.RegisterServerRequestHandler("workspace/applyEdit", HandleApplyEdit)
-	c.RegisterServerRequestHandler("workspace/configuration", HandleWorkspaceConfiguration)
-	c.RegisterServerRequestHandler("client/registerCapability", HandleRegisterCapability)
-	c.RegisterNotificationHandler("window/showMessage", HandleServerMessage)
-	c.RegisterNotificationHandler("textDocument/publishDiagnostics",
-		func(params json.RawMessage) { HandleDiagnostics(c, params) })
 
 	// Notify the LSP server
 	err := c.Initialized(ctx, protocol.InitializedParams{})
@@ -280,22 +297,46 @@ func (c *Client) WaitForServerReady(ctx context.Context) error {
 type OpenFileInfo struct {
 	Version int32
 	URI     protocol.DocumentUri
+	Text    string
 }
 
 func (c *Client) OpenFile(ctx context.Context, filepath string) error {
-	uri := string(protocol.URIFromPath(filepath))
+	_, _, err := c.ensureFileOpen(ctx, filepath)
+	return err
+}
 
+func (c *Client) ensureFileOpen(ctx context.Context, filepath string) (int32, bool, error) {
+	uri := string(protocol.URIFromPath(filepath))
 	c.openFilesMu.Lock()
-	if _, exists := c.openFiles[uri]; exists {
-		c.openFilesMu.Unlock()
-		return nil // Already open
-	}
-	c.openFilesMu.Unlock()
+	defer c.openFilesMu.Unlock()
 
 	// Skip files that do not exist or cannot be read
 	content, err := os.ReadFile(filepath)
 	if err != nil {
-		return fmt.Errorf("error reading file: %w", err)
+		return 0, false, fmt.Errorf("error reading file: %w", err)
+	}
+	text := string(content)
+
+	if fileInfo, exists := c.openFiles[uri]; exists {
+		if fileInfo.Text == text {
+			return fileInfo.Version, false, nil
+		}
+		version := fileInfo.Version + 1
+		params := protocol.DidChangeTextDocumentParams{
+			TextDocument: protocol.VersionedTextDocumentIdentifier{
+				TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: fileInfo.URI},
+				Version:                version,
+			},
+			ContentChanges: []protocol.TextDocumentContentChangeEvent{{
+				Value: protocol.TextDocumentContentChangeWholeDocument{Text: text},
+			}},
+		}
+		if err := c.Notify(ctx, "textDocument/didChange", params); err != nil {
+			return fileInfo.Version, false, err
+		}
+		fileInfo.Version = version
+		fileInfo.Text = text
+		return version, true, nil
 	}
 
 	params := protocol.DidOpenTextDocumentParams{
@@ -303,45 +344,48 @@ func (c *Client) OpenFile(ctx context.Context, filepath string) error {
 			URI:        protocol.DocumentUri(uri),
 			LanguageID: DetectLanguageID(uri),
 			Version:    1,
-			Text:       string(content),
+			Text:       text,
 		},
 	}
+	c.diagnosticsMu.Lock()
+	delete(c.diagnostics, protocol.DocumentUri(uri))
+	c.diagnosticsMu.Unlock()
 
 	if err := c.Notify(ctx, "textDocument/didOpen", params); err != nil {
-		return err
+		return 0, false, err
 	}
 
-	c.openFilesMu.Lock()
 	c.openFiles[uri] = &OpenFileInfo{
 		Version: 1,
 		URI:     protocol.DocumentUri(uri),
+		Text:    text,
 	}
-	c.openFilesMu.Unlock()
 
 	lspLogger.Debug("Opened file: %s", filepath)
 
-	return nil
+	return 1, true, nil
 }
 
 func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
 	uri := string(protocol.URIFromPath(filepath))
+	c.openFilesMu.Lock()
+	defer c.openFilesMu.Unlock()
 
 	content, err := os.ReadFile(filepath)
 	if err != nil {
 		return fmt.Errorf("error reading file: %w", err)
 	}
 
-	c.openFilesMu.Lock()
 	fileInfo, isOpen := c.openFiles[uri]
 	if !isOpen {
-		c.openFilesMu.Unlock()
 		return fmt.Errorf("cannot notify change for unopened file: %s", filepath)
 	}
+	text := string(content)
+	if fileInfo.Text == text {
+		return nil
+	}
 
-	// Increment version
-	fileInfo.Version++
-	version := fileInfo.Version
-	c.openFilesMu.Unlock()
+	version := fileInfo.Version + 1
 
 	params := protocol.DidChangeTextDocumentParams{
 		TextDocument: protocol.VersionedTextDocumentIdentifier{
@@ -353,24 +397,28 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
 		ContentChanges: []protocol.TextDocumentContentChangeEvent{
 			{
 				Value: protocol.TextDocumentContentChangeWholeDocument{
-					Text: string(content),
+					Text: text,
 				},
 			},
 		},
 	}
 
-	return c.Notify(ctx, "textDocument/didChange", params)
+	if err := c.Notify(ctx, "textDocument/didChange", params); err != nil {
+		return err
+	}
+	fileInfo.Version = version
+	fileInfo.Text = text
+	return nil
 }
 
 func (c *Client) CloseFile(ctx context.Context, filepath string) error {
 	uri := string(protocol.URIFromPath(filepath))
 
 	c.openFilesMu.Lock()
+	defer c.openFilesMu.Unlock()
 	if _, exists := c.openFiles[uri]; !exists {
-		c.openFilesMu.Unlock()
 		return nil // Already closed
 	}
-	c.openFilesMu.Unlock()
 
 	params := protocol.DidCloseTextDocumentParams{
 		TextDocument: protocol.TextDocumentIdentifier{
@@ -382,9 +430,7 @@ func (c *Client) CloseFile(ctx context.Context, filepath string) error {
 		return err
 	}
 
-	c.openFilesMu.Lock()
 	delete(c.openFiles, uri)
-	c.openFilesMu.Unlock()
 
 	return nil
 }
@@ -425,5 +471,5 @@ func (c *Client) GetFileDiagnostics(uri protocol.DocumentUri) []protocol.Diagnos
 	c.diagnosticsMu.RLock()
 	defer c.diagnosticsMu.RUnlock()
 
-	return c.diagnostics[uri]
+	return append([]protocol.Diagnostic(nil), c.diagnostics[uri].Diagnostics...)
 }

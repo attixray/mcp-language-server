@@ -176,7 +176,7 @@ This is an [MCP](https://modelcontextprotocol.io/introduction) server that runs 
 - `definition`: Retrieves the complete source code definition of any symbol (function, type, constant, etc.) from your codebase.
 - `references`: Locates all usages and references of a symbol throughout the codebase.
 - `references_at`: Finds references using `filePath`, `line` and `column` instead of searching the workspace by name. Line and column are 1-based; column counts UTF-16 code units. Use `LSP_CONTEXT_LINES=0` to skip enclosing-symbol lookups and return only reference lines. Existing `references` calls remain supported.
-- `diagnostics`: Provides diagnostic information for a specific file, including warnings and errors.
+- `diagnostics`: Provides diagnostic information for a specific file, including warnings and errors. Synchronizes saved content first, uses pull diagnostics when advertised, and otherwise waits for a published report (up to 30 seconds or the caller's deadline). Missing reports and server errors are reported as errors, not as a clean file. `contextLines` is a non-negative number (default 5). Versioned publications must match the synchronized file; servers omitting the version can only be checked by arrival order.
 - `hover`: Display documentation, type hints, or other hover information for a given location.
 - `rename_symbol`: Rename a symbol across a project.
 - `edit_file`: Allows making multiple text edits to a file based on line numbers. Provides a more reliable and context-economical way to edit files compared to search and replace based edit tools.

@@ -51,5 +51,9 @@ func (g *GitignoreMatcher) ShouldIgnore(path string, isDir bool) bool {
 	}
 
 	// Use the go-gitignore Match function to check if the path should be ignored
+	relPath = filepath.ToSlash(relPath)
+	if isDir {
+		relPath += "/"
+	}
 	return g.gitignore.MatchesPath(relPath)
 }

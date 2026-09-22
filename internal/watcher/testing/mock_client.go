@@ -68,7 +68,7 @@ func (m *MockLSPClient) NotifyChange(ctx context.Context, path string) error {
 
 	// Record this as a change event
 	m.events = append(m.events, FileEvent{
-		URI:  "file://" + path,
+		URI:  string(protocol.URIFromPath(path)),
 		Type: protocol.FileChangeType(protocol.Changed),
 	})
 
@@ -141,6 +141,13 @@ func (m *MockLSPClient) ResetEvents() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = []FileEvent{}
+	for {
+		select {
+		case <-m.eventsReceived:
+		default:
+			return
+		}
+	}
 }
 
 // WaitForEvent waits for at least one event to be received or context to be done
@@ -155,3 +162,16 @@ func (m *MockLSPClient) WaitForEvent(ctx context.Context) bool {
 
 // Verify the MockLSPClient implements the watcher.LSPClient interface
 var _ watcher.LSPClient = (*MockLSPClient)(nil)
+
+func (m *MockLSPClient) WaitForSpecificEvent(ctx context.Context, uri protocol.DocumentUri, kind protocol.FileChangeType) bool {
+	for {
+		if m.CountEvents(string(uri), kind) > 0 {
+			return true
+		}
+		select {
+		case <-m.eventsReceived:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}

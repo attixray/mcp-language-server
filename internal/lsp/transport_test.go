@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -13,6 +14,27 @@ import (
 
 type nopWriteCloser struct {
 	io.Writer
+}
+
+func TestContentModifiedRetryIsLimitedToReads(t *testing.T) {
+	for _, method := range []string{"textDocument/hover", "textDocument/rename", "workspace/executeCommand"} {
+		t.Run(method, func(t *testing.T) {
+			c := diagnosticTestClient(t, func(msg *Message) []*Message {
+				if msg.ID.String() == "1" {
+					return []*Message{{JSONRPC: "2.0", ID: msg.ID, Error: &ResponseError{Code: -32801, Message: "content modified"}}}
+				}
+				return []*Message{{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage(`{}`)}}
+			})
+			err := c.Call(context.Background(), method, nil, nil)
+			if method == "textDocument/hover" {
+				if err != nil || c.nextID.Load() != 2 {
+					t.Fatalf("read was not retried: %v", err)
+				}
+			} else if err == nil || c.nextID.Load() != 1 {
+				t.Fatalf("mutating call retried: %v", err)
+			}
+		})
+	}
 }
 
 func (nopWriteCloser) Close() error { return nil }

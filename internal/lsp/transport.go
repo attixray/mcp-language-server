@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
 )
@@ -172,7 +174,9 @@ func (c *Client) handleMessages() {
 
 			if ok {
 				lspLogger.Debug("Handling notification: %s", msg.Method)
-				go handler(msg.Params)
+				// Built-in notification handlers only update state or log. Preserve
+				// wire order so an older publication cannot overwrite a newer one.
+				handler(msg.Params)
 			} else {
 				lspLogger.Debug("No handler for notification: %s", msg.Method)
 			}
@@ -199,6 +203,33 @@ func (c *Client) handleMessages() {
 
 // Call makes a request and waits for the response
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
+	// Only read requests may be retried when the server invalidates an in-flight
+	// analysis. Never automatically repeat edits or command execution.
+	readOnly := false
+	switch method {
+	case "workspace/symbol", "textDocument/hover", "textDocument/references", "textDocument/definition", "textDocument/documentSymbol", "textDocument/diagnostic":
+		readOnly = true
+	}
+	for attempt := 0; ; attempt++ {
+		err := c.callOnce(ctx, method, params, result)
+		var responseError *ResponseError
+		if !readOnly || attempt >= 3 || !errors.As(err, &responseError) || responseError.Code != -32801 {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * 100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (c *Client) callOnce(ctx context.Context, method string, params any, result any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := c.nextID.Add(1)
 
 	lspLogger.Debug("Making call: method=%s id=%v", method, id)

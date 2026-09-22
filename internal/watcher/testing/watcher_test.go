@@ -20,9 +20,6 @@ func init() {
 
 // TestWatcherBasicFunctionality tests the watcher's ability to detect and report file events
 func TestWatcherBasicFunctionality(t *testing.T) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping filesystem watcher tests in GitHub Actions environment")
-	}
 	// Set up a test workspace in a temporary directory
 	testDir, err := os.MkdirTemp("", "watcher-test-*")
 	if err != nil {
@@ -63,10 +60,14 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 	defer cancel()
 
 	// Start watching the workspace
-	go testWatcher.WatchWorkspace(ctx, testDir)
-
-	// Give the watcher time to initialize
-	time.Sleep(500 * time.Millisecond)
+	watcherDone := make(chan struct{})
+	go func() { defer close(watcherDone); testWatcher.WatchWorkspace(ctx, testDir) }()
+	defer func() { cancel(); <-watcherDone }()
+	select {
+	case <-testWatcher.Ready():
+	case <-ctx.Done():
+		t.Fatal("watcher failed to initialize")
+	}
 
 	// Add watcher registrations
 	testWatcher.AddRegistrations(ctx, "test-id", watchers)
@@ -94,13 +95,13 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
 
-		if !mockClient.WaitForEvent(waitCtx) {
+		if !mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Created) {
 			t.Logf("Events received so far: %+v", mockClient.GetEvents())
 			t.Fatal("Timed out waiting for file creation event")
 		}
 
 		// Check for create notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for %s", filePath)
@@ -125,12 +126,12 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
 
-		if !mockClient.WaitForEvent(waitCtx) {
+		if !mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Changed) {
 			t.Fatal("Timed out waiting for file modification event")
 		}
 
 		// Check for change notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Changed))
 		if count == 0 {
 			t.Errorf("No change event received for %s", filePath)
@@ -155,12 +156,12 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
 
-		if !mockClient.WaitForEvent(waitCtx) {
+		if !mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Deleted) {
 			t.Fatal("Timed out waiting for file deletion event")
 		}
 
 		// Check for delete notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Deleted))
 		if count == 0 {
 			t.Errorf("No delete event received for %s", filePath)
@@ -173,9 +174,6 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 
 // TestGitignoreIntegration tests that the watcher respects gitignore patterns
 func TestGitignoreIntegration(t *testing.T) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping filesystem watcher tests in GitHub Actions environment")
-	}
 
 	// Set up a test workspace in a temporary directory
 	testDir, err := os.MkdirTemp("", "watcher-gitignore-test-*")
@@ -217,10 +215,14 @@ func TestGitignoreIntegration(t *testing.T) {
 	defer cancel()
 
 	// Start watching the workspace
-	go testWatcher.WatchWorkspace(ctx, testDir)
-
-	// Give the watcher time to initialize
-	time.Sleep(500 * time.Millisecond)
+	watcherDone := make(chan struct{})
+	go func() { defer close(watcherDone); testWatcher.WatchWorkspace(ctx, testDir) }()
+	defer func() { cancel(); <-watcherDone }()
+	select {
+	case <-testWatcher.Ready():
+	case <-ctx.Done():
+		t.Fatal("watcher failed to initialize")
+	}
 
 	// Add watcher registrations
 	testWatcher.AddRegistrations(ctx, "test-id", watchers)
@@ -247,7 +249,7 @@ func TestGitignoreIntegration(t *testing.T) {
 		// With the corrections to our pattern matching logic, the file will be watched but
 		// shouldExcludeFile won't behave as expected. We'll just log this for now.
 		if len(events) > 0 {
-			t.Logf("Note: .tmp files are detected by the watcher but should be filtered by shouldExcludeFile")
+			t.Errorf("unexpected temporary-file events: %v", events)
 		}
 	})
 
@@ -271,7 +273,7 @@ func TestGitignoreIntegration(t *testing.T) {
 
 		// Check if the tilde file is properly excluded
 		if len(events) > 0 {
-			t.Logf("Note: Tilde files are detected by the watcher but should be filtered by shouldExcludeFile")
+			t.Errorf("unexpected tilde-file events: %v", events)
 		}
 	})
 
@@ -302,7 +304,7 @@ func TestGitignoreIntegration(t *testing.T) {
 
 		// Same issue - the directory will be watched but shouldExcludeDir won't prevent it
 		if len(events) > 0 {
-			t.Logf("Note: .git directory is detected by the watcher but should be filtered by shouldExcludeDir")
+			t.Errorf("unexpected excluded-directory events: %v", events)
 		}
 	})
 
@@ -322,12 +324,12 @@ func TestGitignoreIntegration(t *testing.T) {
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
 
-		if !mockClient.WaitForEvent(waitCtx) {
+		if !mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Created) {
 			t.Fatal("Timed out waiting for file creation event")
 		}
 
 		// Check that notification was sent
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for non-ignored file %s", filePath)
@@ -337,9 +339,6 @@ func TestGitignoreIntegration(t *testing.T) {
 
 // TestRapidChangesDebouncing tests debouncing of rapid file changes
 func TestRapidChangesDebouncing(t *testing.T) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping filesystem watcher tests in GitHub Actions environment")
-	}
 
 	// Set up a test workspace in a temporary directory
 	testDir, err := os.MkdirTemp("", "watcher-debounce-test-*")
@@ -378,10 +377,14 @@ func TestRapidChangesDebouncing(t *testing.T) {
 	defer cancel()
 
 	// Start watching the workspace
-	go testWatcher.WatchWorkspace(ctx, testDir)
-
-	// Give the watcher time to initialize
-	time.Sleep(500 * time.Millisecond)
+	watcherDone := make(chan struct{})
+	go func() { defer close(watcherDone); testWatcher.WatchWorkspace(ctx, testDir) }()
+	defer func() { cancel(); <-watcherDone }()
+	select {
+	case <-testWatcher.Ready():
+	case <-ctx.Done():
+		t.Fatal("watcher failed to initialize")
+	}
 
 	// Add watcher registrations
 	testWatcher.AddRegistrations(ctx, "test-id", watchers)
@@ -402,7 +405,7 @@ func TestRapidChangesDebouncing(t *testing.T) {
 		// Wait for the initial create event
 		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer waitCancel()
-		mockClient.WaitForEvent(waitCtx)
+		mockClient.WaitForSpecificEvent(waitCtx, protocol.URIFromPath(filePath), protocol.Created)
 
 		// Reset events again to clear the creation event
 		mockClient.ResetEvents()
@@ -421,7 +424,7 @@ func TestRapidChangesDebouncing(t *testing.T) {
 		time.Sleep(config.DebounceTime + 200*time.Millisecond)
 
 		// Check for change notifications
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Changed))
 
 		// We should get only 1 or at most 2 change notifications due to debouncing
