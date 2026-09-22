@@ -3,6 +3,7 @@ package utilities
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 
 	// Replace with mocks
 	osReadFile = func(filename string) ([]byte, error) {
+		filename = filepath.ToSlash(filename)
 		if err, ok := mfs.errors[filename+"_read"]; ok {
 			return nil, err
 		}
@@ -40,6 +42,7 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 	}
 
 	osWriteFile = func(filename string, data []byte, perm os.FileMode) error {
+		filename = filepath.ToSlash(filename)
 		if err, ok := mfs.errors[filename+"_write"]; ok {
 			return err
 		}
@@ -51,6 +54,7 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 	}
 
 	osStat = func(name string) (os.FileInfo, error) {
+		name = filepath.ToSlash(name)
 		if err, ok := mfs.errors[name+"_stat"]; ok {
 			return nil, err
 		}
@@ -61,6 +65,7 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 	}
 
 	osRemove = func(name string) error {
+		name = filepath.ToSlash(name)
 		if err, ok := mfs.errors[name+"_remove"]; ok {
 			return err
 		}
@@ -72,6 +77,7 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 	}
 
 	osRemoveAll = func(path string) error {
+		path = filepath.ToSlash(path)
 		if err, ok := mfs.errors[path+"_removeall"]; ok {
 			return err
 		}
@@ -85,6 +91,8 @@ func setupMockFileSystem(_ *testing.T, mfs *mockFileSystem) func() {
 	}
 
 	osRename = func(oldpath, newpath string) error {
+		oldpath = filepath.ToSlash(oldpath)
+		newpath = filepath.ToSlash(newpath)
 		if err, ok := mfs.errors[oldpath+"_rename"]; ok {
 			return err
 		}
@@ -653,7 +661,7 @@ func TestApplyTextEdits(t *testing.T) {
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 				} else {
-					path := strings.TrimPrefix(string(tt.uri), "file://")
+					path := filepath.ToSlash(tt.uri.Path())
 					if content, ok := mfs.files[path]; ok {
 						if string(content) != tt.expected {
 							t.Errorf("applyTextEdits() result = %q, want %q", string(content), tt.expected)
@@ -664,6 +672,55 @@ func TestApplyTextEdits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkspaceEditsUseCanonicalFileURIPaths(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source # 100%.txt")
+	renamedPath := filepath.Join(dir, "renamed # 100%.txt")
+	if err := os.WriteFile(sourcePath, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	sourceURI := protocol.URIFromPath(sourcePath)
+	if !strings.Contains(string(sourceURI), "%23") || !strings.Contains(string(sourceURI), "%25") {
+		t.Fatalf("URI does not escape reserved path characters: %q", sourceURI)
+	}
+	if err := ApplyTextEdits(sourceURI, []protocol.TextEdit{{
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 6},
+			End:   protocol.Position{Line: 0, Character: 11},
+		},
+		NewText: "URI",
+	}}); err != nil {
+		t.Fatalf("apply text edit: %v", err)
+	}
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read edited file: %v", err)
+	}
+	if string(content) != "hello URI" {
+		t.Fatalf("edited content = %q, want %q", content, "hello URI")
+	}
+
+	if err := ApplyDocumentChange(protocol.DocumentChange{RenameFile: &protocol.RenameFile{
+		OldURI: sourceURI,
+		NewURI: protocol.URIFromPath(renamedPath),
+	}}); err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+	if _, err := os.Stat(renamedPath); err != nil {
+		t.Fatalf("stat renamed file: %v", err)
+	}
+
+	if err := ApplyDocumentChange(protocol.DocumentChange{DeleteFile: &protocol.DeleteFile{
+		URI: protocol.URIFromPath(renamedPath),
+	}}); err != nil {
+		t.Fatalf("delete file: %v", err)
+	}
+	if _, err := os.Stat(renamedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
 	}
 }
 
