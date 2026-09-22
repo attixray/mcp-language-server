@@ -42,6 +42,12 @@ func WriteMessage(w io.Writer, msg *Message) error {
 	return nil
 }
 
+func (c *Client) writeMessage(msg *Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return WriteMessage(c.stdin, msg)
+}
+
 // ReadMessage reads a single LSP message from the given reader
 func ReadMessage(r *bufio.Reader) (*Message, error) {
 	// Read headers
@@ -96,6 +102,7 @@ func ReadMessage(r *bufio.Reader) (*Message, error) {
 
 // handleMessages reads and dispatches messages in a loop
 func (c *Client) handleMessages() {
+	defer c.doneOnce.Do(func() { close(c.done) })
 	for {
 		msg, err := ReadMessage(c.stdout)
 		if err != nil {
@@ -150,7 +157,7 @@ func (c *Client) handleMessages() {
 			}
 
 			// Send response back to server
-			if err := WriteMessage(c.stdin, response); err != nil {
+			if err := c.writeMessage(response); err != nil {
 				lspLogger.Error("Error sending response to server: %v", err)
 			}
 
@@ -183,7 +190,6 @@ func (c *Client) handleMessages() {
 			if ok {
 				lspLogger.Debug("Sending response for ID %v to handler", msg.ID)
 				ch <- msg
-				close(ch)
 			} else {
 				lspLogger.Debug("No handler for response ID: %v", msg.ID)
 			}
@@ -217,20 +223,27 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}()
 
 	// Send request
-	if err := WriteMessage(c.stdin, msg); err != nil {
+	if err := c.writeMessage(msg); err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
 	lspLogger.Debug("Waiting for response to request ID: %v", msg.ID)
 
-	// Wait for response
-	resp := <-ch
+	// Wait for the response, cancellation, or transport shutdown.
+	var resp *Message
+	select {
+	case resp = <-ch:
+	case <-ctx.Done():
+		return fmt.Errorf("request %s canceled: %w", method, ctx.Err())
+	case <-c.done:
+		return fmt.Errorf("LSP connection closed while waiting for %s", method)
+	}
 
 	lspLogger.Debug("Received response for request ID: %v", msg.ID)
 
 	if resp.Error != nil {
 		lspLogger.Error("Request failed: %s (code: %d)", resp.Error.Message, resp.Error.Code)
-		return fmt.Errorf("request failed: %s (code: %d)", resp.Error.Message, resp.Error.Code)
+		return resp.Error
 	}
 
 	if result != nil {
@@ -258,7 +271,13 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 		return fmt.Errorf("failed to create notification: %w", err)
 	}
 
-	if err := WriteMessage(c.stdin, msg); err != nil {
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("notification %s canceled: %w", method, ctx.Err())
+	default:
+	}
+
+	if err := c.writeMessage(msg); err != nil {
 		return fmt.Errorf("failed to send notification: %w", err)
 	}
 

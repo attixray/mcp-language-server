@@ -86,6 +86,10 @@ type ResponseError struct {
 	Message string `json:"message"`
 }
 
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf("request failed: %s (code: %d)", e.Message, e.Code)
+}
+
 func NewRequest(id any, method string, params any) (*Message, error) {
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {

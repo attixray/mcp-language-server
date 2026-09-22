@@ -17,10 +17,13 @@ import (
 )
 
 type Client struct {
-	Cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	stderr io.ReadCloser
+	Cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	stderr   io.ReadCloser
+	writeMu  sync.Mutex
+	done     chan struct{}
+	doneOnce sync.Once
 
 	// Request ID counter
 	nextID atomic.Int32
@@ -76,6 +79,7 @@ func NewClient(command string, args ...string) (*Client, error) {
 		serverRequestHandlers: make(map[string]ServerRequestHandler),
 		diagnostics:           make(map[protocol.DocumentUri][]protocol.Diagnostic),
 		openFiles:             make(map[string]*OpenFileInfo),
+		done:                  make(chan struct{}),
 	}
 
 	// Start the LSP server process
@@ -235,25 +239,17 @@ func (c *Client) Close() error {
 	// Attempt to close files but continue shutdown regardless
 	c.CloseAllFiles(ctx)
 
-	// Force kill the LSP process if it doesn't exit within timeout
-	forcedKill := make(chan struct{})
-	go func() {
-		select {
-		case <-time.After(2 * time.Second):
-			lspLogger.Warn("LSP process did not exit within timeout, forcing kill")
-			if c.Cmd.Process != nil {
-				if err := c.Cmd.Process.Kill(); err != nil {
-					lspLogger.Error("Failed to kill process: %v", err)
-				} else {
-					lspLogger.Info("Process killed successfully")
-				}
+	// Force kill the LSP process if it doesn't exit within timeout.
+	killTimer := time.AfterFunc(2*time.Second, func() {
+		lspLogger.Warn("LSP process did not exit within timeout, forcing kill")
+		if c.Cmd.Process != nil {
+			if err := c.Cmd.Process.Kill(); err != nil {
+				lspLogger.Error("Failed to kill process: %v", err)
+			} else {
+				lspLogger.Info("Process killed successfully")
 			}
-			close(forcedKill)
-		case <-forcedKill:
-			// Channel closed from completion path
-			return
 		}
-	}()
+	})
 
 	// Close stdin to signal the server
 	if err := c.stdin.Close(); err != nil {
@@ -262,7 +258,7 @@ func (c *Client) Close() error {
 
 	// Wait for process to exit
 	err := c.Cmd.Wait()
-	close(forcedKill) // Stop the force kill goroutine
+	killTimer.Stop()
 
 	return err
 }
