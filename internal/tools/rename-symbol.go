@@ -40,6 +40,10 @@ func RenameSymbol(ctx context.Context, client *lsp.Client, filePath string, line
 	// Execute the rename directly
 
 	// Execute the rename operation
+	snapshot, err := client.SyncOpenFiles(ctx)
+	if err != nil {
+		return "", err
+	}
 	workspaceEdit, err := client.Rename(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("failed to rename symbol: %v", err)
@@ -113,6 +117,9 @@ func RenameSymbol(ctx context.Context, client *lsp.Client, filePath string, line
 	}
 
 	// Apply the workspace edit to files:workspaceEdit
+	if err := lsp.ValidateFileSnapshot(snapshot); err != nil {
+		return "", err
+	}
 	if err := utilities.ApplyWorkspaceEdit(workspaceEdit); err != nil {
 		return "", fmt.Errorf("failed to apply changes: %v", err)
 	}
