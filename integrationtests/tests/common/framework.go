@@ -18,11 +18,12 @@ import (
 
 // LSPTestConfig defines configuration for a language server test
 type LSPTestConfig struct {
-	Name             string   // Name of the language server
-	Command          string   // Command to run
-	Args             []string // Arguments
-	WorkspaceDir     string   // Template workspace directory
-	InitializeTimeMs int      // Time to wait after initialization in ms
+	Name             string             // Name of the language server
+	Command          string             // Command to run
+	Args             []string           // Arguments
+	WorkspaceDir     string             // Template workspace directory
+	InitializeTimeMs int                // Time to wait after initialization in ms
+	PrepareWorkspace func(string) error // Optional preparation of the copied workspace before starting the server.
 }
 
 // TestSuite contains everything needed for running integration tests
@@ -154,6 +155,11 @@ func (ts *TestSuite) Setup() error {
 	}
 	ts.WorkspaceDir = workspaceDir
 	ts.t.Logf("Copied workspace from %s to %s", ts.Config.WorkspaceDir, workspaceDir)
+	if ts.Config.PrepareWorkspace != nil {
+		if err := ts.Config.PrepareWorkspace(workspaceDir); err != nil {
+			return fmt.Errorf("failed to prepare workspace: %w", err)
+		}
+	}
 
 	// Create and initialize LSP client
 	client, err := lsp.NewClient(ts.Config.Command, ts.Config.Args...)

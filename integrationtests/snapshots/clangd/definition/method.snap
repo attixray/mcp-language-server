@@ -1,7 +1,7 @@
 ---
 
 Symbol: method
-/TEST_OUTPUT/workspace/clangd/src/consumer.cpp
+/TEST_OUTPUT/workspace/src/consumer.cpp
 Range: L7:C1 - L15:C2
 
  7|class TestClass {

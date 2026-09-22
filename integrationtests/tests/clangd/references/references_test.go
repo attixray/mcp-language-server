@@ -89,12 +89,15 @@ func TestFindReferences(t *testing.T) {
 
 			// Count how many different files are mentioned in the result
 			fileCount := countFilesInResult(result, suite.WorkspaceDir)
-			if fileCount < tc.expectedFiles {
-				t.Errorf("Expected references for %s in at least %d files, but found in %d files. Result:\n%s",
+			if fileCount != tc.expectedFiles {
+				t.Errorf("Expected references for %s in exactly %d files, but found in %d files. Result:\n%s",
 					tc.symbolName, tc.expectedFiles, fileCount, result)
 			}
 
 			// Use snapshot testing to verify exact output
+			if strings.Contains(filepath.ToSlash(result), filepath.ToSlash(suite.Config.WorkspaceDir)) {
+				t.Fatalf("References leaked from the shared workspace template: %s", result)
+			}
 			common.SnapshotTest(t, "clangd", "references", tc.snapshotName, result)
 		})
 	}
