@@ -64,7 +64,12 @@ func ReadDefinition(ctx context.Context, client *lsp.Client, symbolName string) 
 		toolsLogger.Debug("Found symbol: %s", symbol.GetName())
 		loc := symbol.GetLocation()
 
-		err := client.OpenFile(ctx, loc.URI.Path())
+		filePath, err := loc.URI.FilePath()
+		if err != nil {
+			definitions = append(definitions, fmt.Sprintf("Unsupported definition URI %s: %v\n", loc.URI, err))
+			continue
+		}
+		err = client.OpenFile(ctx, filePath)
 		if err != nil {
 			toolsLogger.Error("Error opening file: %v", err)
 			continue
@@ -72,24 +77,23 @@ func ReadDefinition(ctx context.Context, client *lsp.Client, symbolName string) 
 
 		banner := "---\n\n"
 		definition, loc, err := GetFullDefinition(ctx, client, loc)
+		if err != nil {
+			toolsLogger.Error("Error getting definition: %v", err)
+			continue
+		}
 		locationInfo := fmt.Sprintf(
 			"Symbol: %s\n"+
 				"File: %s\n"+
-				kind+
-				container+
+				"%s%s"+
 				"Range: L%d:C%d - L%d:C%d\n\n",
 			symbol.GetName(),
-			loc.URI.Path(),
+			filePath,
+			kind, container,
 			loc.Range.Start.Line+1,
 			loc.Range.Start.Character+1,
 			loc.Range.End.Line+1,
 			loc.Range.End.Character+1,
 		)
-
-		if err != nil {
-			toolsLogger.Error("Error getting definition: %v", err)
-			continue
-		}
 
 		definition = addLineNumbers(definition, int(loc.Range.Start.Line)+1)
 

@@ -89,7 +89,11 @@ func findReferencesAtLocations(ctx context.Context, client *lsp.Client, location
 			},
 		}
 		// File is likely to be opened already, but may not be.
-		err := client.OpenFile(ctx, loc.URI.Path())
+		filePath, err := loc.URI.FilePath()
+		if err != nil {
+			return "", err
+		}
+		err = client.OpenFile(ctx, filePath)
 		if err != nil {
 			return "", fmt.Errorf("could not open reference source: %w", err)
 		}
@@ -115,7 +119,11 @@ func findReferencesAtLocations(ctx context.Context, client *lsp.Client, location
 		for _, uriStr := range uris {
 			uri := protocol.DocumentUri(uriStr)
 			fileRefs := refsByFile[uri]
-			filePath := uri.Path()
+			filePath, err := uri.FilePath()
+			if err != nil {
+				allReferences = append(allReferences, fmt.Sprintf("Unsupported reference URI %s: %v", uri, err))
+				continue
+			}
 
 			// Format file header
 			fileInfo := fmt.Sprintf("---\n\n%s\nReferences in File: %d\n",

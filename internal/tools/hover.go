@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/isaacphi/mcp-language-server/internal/lsp"
@@ -41,21 +42,15 @@ func GetHoverInfo(ctx context.Context, client *lsp.Client, filePath string, line
 	// Process the hover contents based on Markup content
 	if hoverResult.Contents.Value == "" {
 		// Extract the line where the hover was requested
-		lineText, err := ExtractTextFromLocation(protocol.Location{
-			URI: uri,
-			Range: protocol.Range{
-				Start: protocol.Position{
-					Line:      position.Line,
-					Character: 0,
-				},
-				End: protocol.Position{
-					Line:      position.Line + 1,
-					Character: 0,
-				},
-			},
-		})
+		content, err := os.ReadFile(filePath)
+		lineText := ""
 		if err != nil {
 			toolsLogger.Warn("failed to extract line at position: %v", err)
+		} else {
+			lines := strings.Split(string(content), "\n")
+			if int(position.Line) < len(lines) {
+				lineText = strings.TrimSuffix(lines[position.Line], "\r")
+			}
 		}
 		result.WriteString(fmt.Sprintf("No hover information available for this position on the following line:\n%s", lineText))
 	} else {

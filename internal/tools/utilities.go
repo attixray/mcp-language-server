@@ -11,7 +11,10 @@ import (
 )
 
 func ExtractTextFromLocation(loc protocol.Location) (string, error) {
-	path := loc.URI.Path()
+	path, err := loc.URI.FilePath()
+	if err != nil {
+		return "", err
+	}
 
 	content, err := os.ReadFile(path)
 	if err != nil {

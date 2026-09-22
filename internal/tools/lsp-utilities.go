@@ -59,7 +59,10 @@ func GetFullDefinition(ctx context.Context, client *lsp.Client, startLocation pr
 
 	if found {
 		// Convert URI to filesystem path
-		filePath := startLocation.URI.Path()
+		filePath, err := startLocation.URI.FilePath()
+		if err != nil {
+			return "", protocol.Location{}, err
+		}
 
 		// Read the file to get the full lines of the definition
 		// because we may have a start and end column

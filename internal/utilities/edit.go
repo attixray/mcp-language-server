@@ -22,7 +22,10 @@ var (
 
 // ApplyTextEdits applies a sequence of text edits to a file specified by URI
 func ApplyTextEdits(uri protocol.DocumentUri, edits []protocol.TextEdit) error {
-	path := uri.Path()
+	path, err := uri.FilePath()
+	if err != nil {
+		return err
+	}
 
 	// Read the file content
 	content, err := osReadFile(path)
@@ -172,6 +175,9 @@ func ApplyTextEdit(lines []string, edit protocol.TextEdit, lineEnding string) ([
 
 // ApplyDocumentChange applies a DocumentChange (create/rename/delete operations)
 func ApplyDocumentChange(change protocol.DocumentChange) error {
+	if err := validateEditURIs(protocol.WorkspaceEdit{DocumentChanges: []protocol.DocumentChange{change}}); err != nil {
+		return err
+	}
 	if change.CreateFile != nil {
 		path := change.CreateFile.URI.Path()
 		if change.CreateFile.Options != nil {
@@ -233,6 +239,9 @@ func ApplyDocumentChange(change protocol.DocumentChange) error {
 
 // ApplyWorkspaceEdit applies the given WorkspaceEdit to the filesystem
 func ApplyWorkspaceEdit(edit protocol.WorkspaceEdit) error {
+	if err := validateEditURIs(edit); err != nil {
+		return err
+	}
 	// Handle Changes field
 	for uri, textEdits := range edit.Changes {
 		if err := ApplyTextEdits(uri, textEdits); err != nil {
@@ -248,6 +257,34 @@ func ApplyWorkspaceEdit(edit protocol.WorkspaceEdit) error {
 		}
 	}
 
+	return nil
+}
+
+// Validate all paths before applying any part of a server-provided edit.
+func validateEditURIs(edit protocol.WorkspaceEdit) error {
+	var uris []protocol.DocumentUri
+	for uri := range edit.Changes {
+		uris = append(uris, uri)
+	}
+	for _, change := range edit.DocumentChanges {
+		if change.CreateFile != nil {
+			uris = append(uris, change.CreateFile.URI)
+		}
+		if change.DeleteFile != nil {
+			uris = append(uris, change.DeleteFile.URI)
+		}
+		if change.RenameFile != nil {
+			uris = append(uris, change.RenameFile.OldURI, change.RenameFile.NewURI)
+		}
+		if change.TextDocumentEdit != nil {
+			uris = append(uris, change.TextDocumentEdit.TextDocument.URI)
+		}
+	}
+	for _, uri := range uris {
+		if _, err := uri.FilePath(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

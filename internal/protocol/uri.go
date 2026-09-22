@@ -84,6 +84,19 @@ func (uri DocumentUri) Path() string {
 	return filepath.FromSlash(filename)
 }
 
+// FilePath validates server-provided URIs without panicking. Empty and virtual
+// documents cannot be read or edited through the local filesystem.
+func (uri DocumentUri) FilePath() (string, error) {
+	if uri == "" {
+		return "", fmt.Errorf("empty file URI")
+	}
+	name, err := filename(uri)
+	if err != nil {
+		return "", err
+	}
+	return filepath.FromSlash(name), nil
+}
+
 // Dir returns the URI for the directory containing the receiver.
 func (uri DocumentUri) Dir() DocumentUri {
 	// This function could be more efficiently implemented by avoiding any call
