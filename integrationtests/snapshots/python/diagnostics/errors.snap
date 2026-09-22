@@ -6,18 +6,16 @@ ERROR at L47:C15: "undefined_variable" is not defined (Source: Pyright, Code: re
 ERROR at L51:C19: Type "Literal[123]" is not assignable to declared type "str"
   "Literal[123]" is not assignable to "str" (Source: Pyright, Code: reportAssignmentType)
 
-25|def function_with_type_error() -> str:
-...
 29|        Should return a string but actually returns an int
 30|    """
 31|    return 42  # Type error: Incompatible return value type (got "int", expected "str")
-...
-34|class ErrorClass:
+32|
+33|
 ...
 45|    def method_with_undefined_variable(self) -> None:
 46|        """A method that uses an undefined variable."""
 47|        print(undefined_variable)  # Error: undefined_variable is not defined
-...
+48|
 49|
 50|# Variable with incompatible type annotation
 51|wrong_type: str = 123  # Type error: Incompatible types in assignment

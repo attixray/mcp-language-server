@@ -42,7 +42,7 @@ func ApplyTextEdits(uri protocol.DocumentUri, edits []protocol.TextEdit) error {
 	endsWithNewline := len(content) > 0 && bytes.HasSuffix(content, []byte(lineEnding))
 
 	// Split into lines without the endings
-	lines := strings.Split(string(content), lineEnding)
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 
 	// Check for overlapping edits
 	for i, edit1 := range edits {
@@ -135,7 +135,7 @@ func ApplyTextEdit(lines []string, edit protocol.TextEdit, lineEnding string) ([
 		}
 	} else {
 		// Split new text into lines
-		newLines := strings.Split(edit.NewText, "\n")
+		newLines := strings.Split(strings.ReplaceAll(edit.NewText, "\r\n", "\n"), "\n")
 
 		if len(newLines) == 1 {
 			// Single line change

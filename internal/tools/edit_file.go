@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -92,16 +91,8 @@ func getRange(startLine, endLine int, filePath string) (protocol.Range, error) {
 		return protocol.Range{}, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Detect line ending style
-	var lineEnding string
-	if bytes.Contains(content, []byte("\r\n")) {
-		lineEnding = "\r\n"
-	} else {
-		lineEnding = "\n"
-	}
-
 	// Split lines without the line endings
-	lines := strings.Split(string(content), lineEnding)
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 
 	// Handle start line positioning
 	if startLine < 1 {
