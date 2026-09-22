@@ -17,13 +17,15 @@ import (
 )
 
 type Client struct {
-	Cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	stderr   io.ReadCloser
-	writeMu  sync.Mutex
-	done     chan struct{}
-	doneOnce sync.Once
+	Cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	stderr    io.ReadCloser
+	writeMu   sync.Mutex
+	done      chan struct{}
+	doneOnce  sync.Once
+	closeOnce sync.Once
+	closeErr  error
 
 	// Request ID counter
 	nextID atomic.Int32
@@ -96,16 +98,7 @@ func NewClient(command string, args ...string) (*Client, error) {
 	}
 
 	// Handle stderr in a separate goroutine with proper logging
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			processLogger.Info("%s", line)
-		}
-		if err := scanner.Err(); err != nil {
-			lspLogger.Error("Error reading LSP server stderr: %v", err)
-		}
-	}()
+	go drainStderr(stderr)
 
 	// Start message handling loop
 	go client.handleMessages()
@@ -252,24 +245,55 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 }
 
 func (c *Client) Close() error {
+	c.closeOnce.Do(func() { c.closeErr = c.close() })
+	return c.closeErr
+}
+
+// Drain arbitrarily long stderr lines in bounded chunks, keeping the child
+// from blocking on a full pipe without allocating an unbounded log line.
+func drainStderr(stderr io.Reader) {
+	reader := bufio.NewReaderSize(stderr, 16*1024)
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) != 0 {
+			processLogger.Info("%s", strings.TrimSuffix(string(chunk), "\n"))
+		}
+		if err != nil && err != bufio.ErrBufferFull {
+			if err != io.EOF {
+				lspLogger.Debug("LSP stderr closed: %v", err)
+			}
+			return
+		}
+	}
+}
+
+func (c *Client) close() error {
+	// Start the backstop BEFORE any pipe write or file-sync lock acquisition.
+	// Closing stdin deliberately does not acquire writeMu: it unblocks writers.
+	killTimer := time.AfterFunc(2*time.Second, func() {
+		if err := c.stdin.Close(); err != nil {
+			lspLogger.Debug("Closing LSP stdin: %v", err)
+		}
+		if c.Cmd.Process != nil {
+			if err := c.Cmd.Process.Kill(); err != nil {
+				lspLogger.Debug("Terminating LSP process: %v", err)
+			}
+		}
+	})
+	defer killTimer.Stop()
 	// Try to close all open files first
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	// Attempt to close files but continue shutdown regardless
 	c.CloseAllFiles(ctx)
 
-	// Force kill the LSP process if it doesn't exit within timeout.
-	killTimer := time.AfterFunc(2*time.Second, func() {
-		lspLogger.Warn("LSP process did not exit within timeout, forcing kill")
-		if c.Cmd.Process != nil {
-			if err := c.Cmd.Process.Kill(); err != nil {
-				lspLogger.Error("Failed to kill process: %v", err)
-			} else {
-				lspLogger.Info("Process killed successfully")
-			}
-		}
-	})
+	if err := c.Shutdown(ctx); err != nil {
+		lspLogger.Debug("LSP shutdown: %v", err)
+	}
+	if err := c.Exit(ctx); err != nil {
+		lspLogger.Debug("LSP exit: %v", err)
+	}
 
 	// Close stdin to signal the server
 	if err := c.stdin.Close(); err != nil {
@@ -277,10 +301,7 @@ func (c *Client) Close() error {
 	}
 
 	// Wait for process to exit
-	err := c.Cmd.Wait()
-	killTimer.Stop()
-
-	return err
+	return c.Cmd.Wait()
 }
 
 type ServerState int

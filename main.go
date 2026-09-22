@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,6 +35,9 @@ type mcpServer struct {
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
 	workspaceWatcher *watcher.WorkspaceWatcher
+	lifecycleMu      sync.Mutex
+	closing          bool
+	cleanupOnce      sync.Once
 }
 
 func parseConfig() (*config, error) {
@@ -85,11 +90,18 @@ func (s *mcpServer) initializeLSP() error {
 		return fmt.Errorf("failed to change to workspace directory: %v", err)
 	}
 
+	s.lifecycleMu.Lock()
+	if s.closing {
+		s.lifecycleMu.Unlock()
+		return context.Canceled
+	}
 	client, err := lsp.NewClient(s.config.lspCommand, s.config.lspArgs...)
 	if err != nil {
+		s.lifecycleMu.Unlock()
 		return fmt.Errorf("failed to create LSP client: %v", err)
 	}
 	s.lspClient = client
+	s.lifecycleMu.Unlock()
 	s.workspaceWatcher = watcher.NewWorkspaceWatcher(client)
 
 	initResult, err := client.InitializeLSPClient(s.ctx, s.config.workspaceDir)
@@ -111,7 +123,6 @@ func (s *mcpServer) start() error {
 	s.mcpServer = server.NewMCPServer(
 		"MCP Language Server",
 		"v0.0.2",
-		server.WithLogging(),
 		server.WithRecovery(),
 	)
 
@@ -125,121 +136,63 @@ func (s *mcpServer) start() error {
 
 func main() {
 	coreLogger.Info("MCP Language Server starting")
-
-	done := make(chan struct{})
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	config, err := parseConfig()
+	cfg, err := parseConfig()
 	if err != nil {
 		coreLogger.Fatal("%v", err)
 	}
-
-	server, err := newServer(config)
+	s, err := newServer(cfg)
 	if err != nil {
 		coreLogger.Fatal("%v", err)
 	}
-
-	// Parent process monitoring channel
-	parentDeath := make(chan struct{})
-
-	// Monitor parent process termination
-	// Claude desktop does not properly kill child processes for MCP servers
-	go func() {
-		ppid := os.Getppid()
-		coreLogger.Debug("Monitoring parent process: %d", ppid)
-
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				currentPpid := os.Getppid()
-				if currentPpid != ppid && (currentPpid == 1 || ppid == 1) {
-					coreLogger.Info("Parent process %d terminated (current ppid: %d), initiating shutdown", ppid, currentPpid)
-					close(parentDeath)
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Handle shutdown triggers
-	go func() {
-		select {
-		case sig := <-sigChan:
-			coreLogger.Info("Received signal %v in PID: %d", sig, os.Getpid())
-			cleanup(server, done)
-		case <-parentDeath:
-			coreLogger.Info("Parent death detected, initiating shutdown")
-			cleanup(server, done)
-		}
-	}()
-
-	if err := server.start(); err != nil {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	if err := runServer(s, signals); err != nil {
 		coreLogger.Error("Server error: %v", err)
-		cleanup(server, done)
 		os.Exit(1)
 	}
-
-	<-done
-	coreLogger.Info("Server shutdown complete for PID: %d", os.Getpid())
-	os.Exit(0)
 }
 
-func cleanup(s *mcpServer, done chan struct{}) {
-	coreLogger.Info("Cleanup initiated for PID: %d", os.Getpid())
-
-	// Create a context with timeout for shutdown operations
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if s.lspClient != nil {
-		coreLogger.Info("Closing open files")
-		s.lspClient.CloseAllFiles(ctx)
-
-		// Create a shorter timeout context for the shutdown request
-		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		defer shutdownCancel()
-
-		// Run shutdown in a goroutine with timeout to avoid blocking if LSP doesn't respond
-		shutdownDone := make(chan struct{})
-		go func() {
-			coreLogger.Info("Sending shutdown request")
-			if err := s.lspClient.Shutdown(shutdownCtx); err != nil {
-				coreLogger.Error("Shutdown request failed: %v", err)
-			}
-			close(shutdownDone)
-		}()
-
-		// Wait for shutdown with timeout
+// Keep the main goroutine able to handle shutdown even if initialization or
+// ServeStdio is blocked. EOF, signals and parent death converge on one cleanup.
+func runServer(s *mcpServer, signals <-chan os.Signal) error {
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.start() }()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	parent := os.Getppid()
+	var result error
+running:
+	for {
 		select {
-		case <-shutdownDone:
-			coreLogger.Info("Shutdown request completed")
-		case <-time.After(1 * time.Second):
-			coreLogger.Warn("Shutdown request timed out, proceeding with exit")
-		}
-
-		coreLogger.Info("Sending exit notification")
-		if err := s.lspClient.Exit(ctx); err != nil {
-			coreLogger.Error("Exit notification failed: %v", err)
-		}
-
-		coreLogger.Info("Closing LSP client")
-		if err := s.lspClient.Close(); err != nil {
-			coreLogger.Error("Failed to close LSP client: %v", err)
+		case result = <-startDone:
+			break running
+		case <-signals:
+			break running
+		case <-ticker.C:
+			if parent != 1 && os.Getppid() == 1 {
+				break running
+			}
 		}
 	}
-
-	// Send signal to the done channel
-	select {
-	case <-done: // Channel already closed
-	default:
-		close(done)
+	s.cleanup()
+	if errors.Is(result, context.Canceled) {
+		return nil
 	}
+	return result
+}
 
-	coreLogger.Info("Cleanup completed for PID: %d", os.Getpid())
+func (s *mcpServer) cleanup() {
+	s.cleanupOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		s.closing = true
+		client := s.lspClient
+		s.lifecycleMu.Unlock()
+		s.cancelFunc()
+		if client != nil {
+			if err := client.Close(); err != nil {
+				coreLogger.Debug("LSP cleanup: %v", err)
+			}
+		}
+	})
 }
