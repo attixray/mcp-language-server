@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    Keeps design-time builds out of the intermediate directory a command-line
+    build is using.
+
+    Language servers built on Roslyn's MSBuildWorkspace (csharp-ls) and Visual
+    Studio run design-time builds with DesignTimeBuild=true. For WPF projects
+    these run the markup compiler and write generated sources (*.g.i.cs,
+    *.g.cs), BAML, caches and assembly attributes into $(IntermediateOutputPath).
+    When a project sets that path unconditionally, as bari's generated projects
+    do, a design-time build and a real build share one directory and replace
+    each other's files mid-build (CS2001, BG1002).
+
+    Point the language server at this file through the environment:
+
+      CustomBeforeMicrosoftCommonTargets=<path to this file>
+
+    MSBuild reads environment variables as properties and imports this file at
+    the start of Microsoft.Common.CurrentVersion.targets, after the project
+    body and before any property is derived from IntermediateOutputPath.
+    Command-line builds may import it as well; it changes nothing for them.
+  -->
+  <PropertyGroup Condition="'$(DesignTimeBuild)' == 'true' and '$(IntermediateOutputPath)' != ''">
+    <IntermediateOutputPath Condition="!HasTrailingSlash('$(IntermediateOutputPath)')">$(IntermediateOutputPath)\</IntermediateOutputPath>
+    <IntermediateOutputPath>$(IntermediateOutputPath)designtime\</IntermediateOutputPath>
+  </PropertyGroup>
+</Project>

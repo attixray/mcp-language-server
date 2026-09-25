@@ -31,6 +31,17 @@ jobs:
           - name: baseline bridge v0.1.1-attixray.2
             sessions: 2
             bridge: baseline
+          - name: baseline bridge, design-time isolation
+            sessions: 2
+            bridge: baseline
+            session_env: 'CustomBeforeMicrosoftCommonTargets={repo}\contrib\msbuild\DesignTimeIsolation.targets'
+          - name: bridge under test
+            sessions: 2
+            bridge: head
+          - name: bridge under test, design-time isolation
+            sessions: 2
+            bridge: head
+            session_env: 'CustomBeforeMicrosoftCommonTargets={repo}\contrib\msbuild\DesignTimeIsolation.targets'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
