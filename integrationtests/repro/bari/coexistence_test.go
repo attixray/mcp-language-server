@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,8 +196,9 @@ func markupOutputsSince(root string, since time.Time) (count int) {
 
 // probeLocks repeatedly opens the build's output assemblies for writing, as a
 // build replacing them would, and counts sharing violations: another process
-// holding the file open without FILE_SHARE_WRITE.
-func probeLocks(target string, duration time.Duration) (attempts, locked int, files map[string]int) {
+// holding the file open without FILE_SHARE_WRITE. For the first violations it
+// also records which process held the file, per the Restart Manager.
+func probeLocks(target string, duration time.Duration) (attempts, locked int, files, holders map[string]int) {
 	var outputs []string
 	entries, _ := os.ReadDir(target)
 	for _, module := range entries {
@@ -206,7 +208,9 @@ func probeLocks(target string, duration time.Duration) (attempts, locked int, fi
 		dlls, _ := filepath.Glob(filepath.Join(target, module.Name(), "*.dll"))
 		outputs = append(outputs, dlls...)
 	}
-	files = map[string]int{}
+	files, holders = map[string]int{}, map[string]int{}
+	queries := 0
+	workspace := filepath.Dir(target) + string(filepath.Separator)
 	deadline := time.Now().Add(duration)
 	for time.Now().Before(deadline) {
 		for _, file := range outputs {
@@ -219,11 +223,17 @@ func probeLocks(target string, duration time.Duration) (attempts, locked int, fi
 			if errors.Is(err, syscall.Errno(32)) { // ERROR_SHARING_VIOLATION
 				locked++
 				files[filepath.Base(file)]++
+				if queries < 100 {
+					queries++
+					for _, holder := range lockHolders(file) {
+						holders[filepath.Base(file)+" <- "+strings.ReplaceAll(holder, workspace, "")]++
+					}
+				}
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return attempts, locked, files
+	return attempts, locked, files, holders
 }
 
 // ------------------------------------------------------------------- MCP
@@ -765,11 +775,20 @@ func TestDesignTimeRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = loop.Process.Kill() }()
-	attempts, locked, lockedFiles := probeLocks(filepath.Join(cfg.workspace, "target"), 30*time.Second)
+	attempts, locked, lockedFiles, holderCounts := probeLocks(filepath.Join(cfg.workspace, "target"), 30*time.Second)
 	r.printf("While design-time builds ran alone for 30 s:\n\n")
 	r.printf("- WPF markup outputs rewritten in the build's intermediate directories: %d\n", markupOutputsSince(tmp, built))
 	r.printf("- files in designtime dirs: %d\n", countIsolated(tmp))
-	r.printf("- output assemblies found locked against writing: %d of %d attempts %v\n\n", locked, attempts, lockedFiles)
+	r.printf("- output assemblies found locked against writing: %d of %d attempts %v\n", locked, attempts, lockedFiles)
+	holderNames := make([]string, 0, len(holderCounts))
+	for holder := range holderCounts {
+		holderNames = append(holderNames, holder)
+	}
+	sort.Strings(holderNames)
+	for _, holder := range holderNames {
+		r.printf("  - %dx %s\n", holderCounts[holder], holder)
+	}
+	r.printf("\n")
 
 	r.stepHeader()
 	for i, command := range cycleSteps(cfg.cycles, "build", "rebuild") {
