@@ -28,6 +28,14 @@ while `csharp-ls` sessions are loaded on the same tree: from this bridge
 - **H4:** csharp-ls exits when its bridge dies. The bridge now also exits when
   its parent does. A job object takes the language server's process tree down
   with the bridge.
+- **bari and the add-on were fixed at the source afterwards.**
+  - bari 1.1.0 (`attixray/bari`, .NET 10) writes identical project files
+    across cleans, retries blocked deletes and names the holder, and keeps
+    `target/.vs`.
+  - Add-on 1.12.6 loads in the background and cancels bari's whole process
+    tree at once.
+  - The owner verified both on the Suite on 2026-09-25; see
+    [Local verification](#local-verification-2026-09-25).
 
 ## Evidence
 
@@ -149,7 +157,9 @@ revision `PropertiesSection` writes `<ProjectGuid>` from
 `clean`, and therefore `rebuild`, deletes that cache unless `--soft-clean` is
 given, so every project file comes back with a new GUID. Roslyn identifies
 projects by path, so the gate ignores `<ProjectGuid>` when comparing content.
-`bari.ps1` assigns GUIDs the same way.
+`bari.ps1` assigns GUIDs the same way. bari 1.1.0 derives new GUIDs from the
+suite and project names, so a clean no longer changes them; the gate still
+ignores the element for older bari builds.
 
 ### H3: handles without share-delete
 
@@ -263,8 +273,9 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 ## Visual Studio builds and bari-vs-addon
 
-The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
-`zvrana/bari-vs-addon` holds only the 2014 code. The fixes below are in 1.12.3.
+At the start of this work the installed add-on was 1.12.2
+(`attixray/bari-vs-addon` at `d42404b`); `zvrana/bari-vs-addon` holds only the
+2014 code. The owner now runs 1.12.6.
 
 - **Solution and selection commands.** The add-on intercepts Build, Rebuild
   and Clean Solution, Build and Rebuild Selection, Start Without Debugging,
@@ -293,6 +304,13 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
     and ignores `*_wpftmp.*` (see H3);
   - bari's stderr is drained; it was redirected and never read, so a bari
     writing enough to it would block and the build would never finish.
+- **Add-on 1.12.4–1.12.6**, merged by attixray/bari-vs-addon#2:
+  - the package is an `AsyncPackage` that loads in the background, so
+    Visual Studio's synchronous autoload no longer has to be allowed
+    (Visual Studio 18.10 has no UI for that setting any more);
+  - Cancel terminates a job object that holds bari and everything it starts,
+    instead of walking the process tree with WMI while bari keeps running;
+  - log4net 2.0.8 → 3.4.0.
 
 ## Coverage
 
@@ -324,17 +342,50 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
   `Microsoft.Common.CurrentVersion.targets`, too late for properties derived
   during evaluation (`TargetRefPath`, the assembly attributes file).
 
-## Follow-ups that need bari changes (not done; owner decision)
+## bari changes (attixray/bari 1.1.0)
 
-- Generate the intermediate paths conditioned on
-  `'$(DesignTimeBuild)' == 'true'`. This protects every tool without an
-  environment variable.
-- Write `.csproj` and `.sln` only when their content changes. The churn then
-  goes away at the source, for every watcher.
-- Retry sharing violations in `CsprojCleaner` and in the clean of `target/`,
-  with a short back-off and the holder in the message.
-- Derive project GUIDs from project names instead of `cache/<goal>/guids`,
-  so a clean regenerates identical project files.
+The owner approved the bari follow-ups. They are in the fork `attixray/bari`,
+which builds on `p5ych08illy/bari`'s .NET 10 migration, and are released as
+[1.1.0](https://github.com/attixray/bari/releases/tag/1.1.0):
+
+| change | PR | effect |
+|---|---|---|
+| write `.csproj`, `.fsproj`, `.vcxproj` and `.sln` only when their content changes | attixray/bari#1 | an up-to-date build touches no project file; the churn is gone at the source, for every watcher |
+| derive new project GUIDs from the suite and project names | attixray/bari#1 | a clean regenerates byte-identical project files |
+| retry deletes that another process briefly blocks, for about 3 s, and name the holder through the Restart Manager | attixray/bari#1 | a brief lock no longer fails a clean; a lasting one says who holds it |
+| keep `target/.vs` on clean | attixray/bari#2 | Visual Studio's DevHub index no longer fails every clean, and the solution state survives |
+| stop writing when the console output is closed | attixray/bari#3 | no crash while reporting an error after the reader went away |
+| write `target/<solution>.yaml` only when it changes | attixray/bari#3 | `bari vs` no longer touches the add-on's file |
+| version from `git describe --tags --long` | attixray/bari#4 | builds report `1.1.0.<n>` instead of `0.0.0.0` |
+
+Not done: generating the intermediate paths conditioned on
+`'$(DesignTimeBuild)' == 'true'`, which would protect every tool without an
+environment variable. `DesignTimeIsolation.targets` covers it for now.
+
+## Local verification (2026-09-25)
+
+The owner ran two handoff tests on the Suite (`sp-jd`, `debug-x64`) with
+Visual Studio Professional 2026 18.10 and synchronous autoload off. The
+second used bari `777d57e` (1.1.0 without the version fix) in a separate
+clone, next to the old `C:\Bari`.
+
+| check | add-on 1.12.4, bari 1.0.3.68 | add-on 1.12.6, bari 1.1.0 |
+|---|---|---|
+| build of `sp-jd` (C#, F#, C++/CLI, NuGet, Python postprocessors) | pass | pass: 91 s first build, 3 s up to date |
+| add-on load with no solution open | 2 s | 1.9 s |
+| add-on load after a direct `.sln` open | about 60 s | about 61 s (see residual risks) |
+| Cancel | about 21 s; bari crashed writing to the closed pipe | whole tree gone within 0.6 s of bari; clean Build pane |
+| clean + rebuild ×3 with the solution open | every step warned: DevHub held a `target\.vs\…\*.vsidx` | no warning; `target\.vs` kept |
+| project files after a clean | new `<ProjectGuid>` in each | 99 files byte-identical, and the `.sln` |
+| repeated builds in Visual Studio | not checked | no timestamp changed, no reload bar |
+| brief lock during a clean | not checked | deleted after 4 retries |
+| lasting lock during a clean | not checked | the warning names `powershell (<pid>)` |
+
+The one failure in the 1.12.4 run was a `CS2001` for a `*_wpftmp` project
+during a rebuild started from Visual Studio, while about 13 of Visual
+Studio's own design-time MSBuild nodes ran. That is H1 with Visual Studio as
+the design-time builder, which the targets file covers only with
+`DesignTimeIsolationInVisualStudio=true`. The 1.12.6 run showed no CS2001.
 
 ## Residual risks
 
@@ -348,6 +399,15 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
   structure.
 - If the variable is set user-wide, removing the file silently turns the
   isolation off: MSBuild skips a missing file. Keep the file at a stable path.
+- Visual Studio holds background package loads until a solution opened at
+  start-up has finished loading, about a minute for `sp-jd`. A build clicked
+  before that can run as an ordinary MSBuild build instead of through bari.
+  Only synchronous autoload would change that. In the test, the build clicked
+  during the load still went through bari.
+- Only a unit test covers the fix for bari crashing on a closed console. The
+  local test could not reproduce the crash with the old bari either, and the
+  add-on's job-object Cancel no longer leaves bari running against a closed
+  pipe.
 
 ## Questions for the owner
 
@@ -360,7 +420,8 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
    check the rest.
 4. Which bari revision is `C:\Bari\bari.exe` 1.0.3.68? **`9386ad0`**, by its
    build time (see H2).
-5. Open: which of the bari follow-ups below to make?
+5. Which of the bari follow-ups to make? **All but the conditional
+   intermediate paths**; see [bari changes](#bari-changes-attixraybari-110).
 
 ## Installation (owner)
 
@@ -403,12 +464,25 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
 
    The arguments stay as they are. `--project-settle 30s` is the default.
 
-4. **Install the fixed add-on (1.12.3).** From the latest green `Build VSIX`
-   run of `attixray/bari-vs-addon` on `master`, download the
-   `BariVSPackage.vsix` artifact (GitHub wraps it in a zip), close Visual
-   Studio, and open the `.vsix`.
+4. **Install the add-on (1.12.6).** Download `BariVSPackage.vsix` from the
+   [v1.12.6 release](https://github.com/attixray/bari-vs-addon/releases/tag/v1.12.6),
+   close Visual Studio, and open the file from an elevated prompt. It installs
+   for all users and replaces an all-users 1.12.2 or later. Uninstall a
+   per-user copy older than 1.12.2 first; the add-on README has the details.
 
-5. **Optional, while running the acceptance steps:** add
+5. **Install bari 1.1.0.** It is framework-dependent and needs the .NET 10
+   runtime (`dotnet --list-runtimes` shows `Microsoft.NETCore.App 10.*`).
+   - Download `bari-1.1.0-net10.zip` from the
+     [1.1.0 release](https://github.com/attixray/bari/releases/tag/1.1.0) and
+     check it against `SHA256SUMS`.
+   - Replace the whole `C:\Bari` directory with its contents. Keep the old
+     directory as a fallback.
+   - Run `C:\Bari\bari.exe --target debug-x64 clean` once. The old and the new
+     bari must not share a `cache\`.
+   - Run `C:\Bari\bari.exe --target debug-x64 vs sp-jd`, so the solution's
+     `.yaml` names the new `bari-path`.
+
+6. **Optional, while running the acceptance steps:** add
    `LOG_LEVEL = 'INFO'` and
    `LOG_FILE = 'C:\Users\Attila\.local\share\mcp-language-server\bridge.log'`
    under `[mcp_servers.csharp-lsp.env]`. The log then shows every
@@ -451,7 +525,8 @@ The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
    - `Select-String` should print nothing.
    - `Compare-Object` should print nothing. That confirms that bari
      regenerates identical project files apart from `<ProjectGuid>`, which the
-     bridge relies on to report no change.
+     bridge relies on to report no change. With bari 1.1.0 the files are
+     identical, `<ProjectGuid>` included.
 
 4. Run `C:\Bari\bari.exe --target debug-x64 test sp-jd`. It should pass.
 5. Ask both sessions for a definition and references of a symbol used across
