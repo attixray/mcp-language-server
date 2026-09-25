@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
 	"github.com/isaacphi/mcp-language-server/internal/lsp"
@@ -144,6 +143,9 @@ func main() {
 	if err != nil {
 		coreLogger.Fatal("%v", err)
 	}
+	if err := containChildren(); err != nil {
+		coreLogger.Warn("Language server processes may outlive the bridge: %v", err)
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -158,22 +160,12 @@ func main() {
 func runServer(s *mcpServer, signals <-chan os.Signal) error {
 	startDone := make(chan error, 1)
 	go func() { startDone <- s.start() }()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	parent := os.Getppid()
 	var result error
-running:
-	for {
-		select {
-		case result = <-startDone:
-			break running
-		case <-signals:
-			break running
-		case <-ticker.C:
-			if parent != 1 && os.Getppid() == 1 {
-				break running
-			}
-		}
+	select {
+	case result = <-startDone:
+	case <-signals:
+	case <-watchParent():
+		coreLogger.Info("Parent process exited; shutting down")
 	}
 	s.cleanup()
 	if errors.Is(result, context.Canceled) {
