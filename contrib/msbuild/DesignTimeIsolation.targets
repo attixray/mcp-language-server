@@ -40,13 +40,15 @@
     The markup compiler gets copies of the references that are build outputs
     (not framework or package assemblies), so it never locks the files a build
     replaces. The original references are restored before CoreCompile, so the
-    language server still sees the real paths.
+    language server still sees the real paths. Transitive project references
+    come from the assets file and carry NuGetPackageId, so project references
+    are matched by ReferenceSourceTarget first.
   -->
   <Target Name="_DesignTimeIsolationCopyMarkupReferences" BeforeTargets="MarkupCompilePass1"
           Condition="'$(_DesignTimeIsolation)' == 'true' and '@(Page)@(ApplicationDefinition)' != ''">
     <ItemGroup>
       <_DesignTimeIsolationReference Include="@(ReferencePath)"
-          Condition="'%(ReferencePath.FrameworkFile)' != 'true' and '%(ReferencePath.NuGetPackageId)' == '' and '%(ReferencePath.FrameworkReferenceName)' == ''" />
+          Condition="'%(ReferencePath.ReferenceSourceTarget)' == 'ProjectReference' or ('%(ReferencePath.FrameworkFile)' != 'true' and '%(ReferencePath.NuGetPackageId)' == '' and '%(ReferencePath.FrameworkReferenceName)' == '')" />
       <_DesignTimeIsolationReference>
         <DesignTimeCopy>$(IntermediateOutputPath)references\%(Filename)%(Extension)</DesignTimeCopy>
       </_DesignTimeIsolationReference>
