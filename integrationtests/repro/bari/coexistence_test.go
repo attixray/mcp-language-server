@@ -196,7 +196,8 @@ func startSession(t *testing.T, cfg reproConfig, id int) *session {
 	}
 	cmd := exec.Command(cfg.bridge, args...)
 	cmd.Dir = cfg.workspace
-	cmd.Env = append(append(os.Environ(), "LOG_LEVEL=INFO", "LSP_CONTEXT_LINES=0"), cfg.env...)
+	// Wire logging records the server's window/logMessage notifications.
+	cmd.Env = append(append(os.Environ(), "LOG_LEVEL=INFO", "LOG_COMPONENT_LEVELS=wire:DEBUG", "LSP_CONTEXT_LINES=0"), cfg.env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -373,6 +374,59 @@ func (s *session) waitCorrect(ctx context.Context, modules int) (time.Duration, 
 	}
 }
 
+// serverMessages extracts the language server's own log and messages from a
+// session log, leaving out reload notices and other wire traffic.
+func serverMessages(file string, limit int) string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err.Error()
+	}
+	var kept []string
+	dropped := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "will reload solution") {
+			continue
+		}
+		if !strings.Contains(line, "window/logMessage") && !strings.Contains(line, "[lsp-process]") &&
+			!strings.Contains(line, "Server ") && !strings.Contains(line, "[ERROR]") && !strings.Contains(line, "[WARN]") {
+			continue
+		}
+		if len(kept) >= limit {
+			dropped++
+			continue
+		}
+		if len(line) > 400 {
+			line = line[:400] + "..."
+		}
+		kept = append(kept, line)
+	}
+	if dropped != 0 {
+		kept = append(kept, fmt.Sprintf("... %d more lines", dropped))
+	}
+	return strings.Join(kept, "\n")
+}
+
+// listTree lists files below dir with sizes and modification times.
+func listTree(dir string, limit int) string {
+	var lines []string
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		lines = append(lines, fmt.Sprintf("%s %7d %s", info.ModTime().Format("15:04:05.000"), info.Size(), rel))
+		return nil
+	})
+	if len(lines) > limit {
+		lines = append(lines[:limit], fmt.Sprintf("... %d more files", len(lines)-limit))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ------------------------------------------------------------------- processes
 
 type process struct {
@@ -521,6 +575,11 @@ func TestBariCoexistence(t *testing.T) {
 	}
 	shared, _ := countDesignTimeOutputs(filepath.Join(cfg.workspace, "target", "tmp"))
 	fmt.Fprintf(&summary, "\n*.g.i.cs in the build's intermediate directories after the sessions loaded: %d\n\n", shared)
+	probe := filepath.Join(cfg.workspace, "target", "tmp", "Mod1", "Extensions.Mod1")
+	if len(sessions) != 0 {
+		time.Sleep(15 * time.Second)
+		fmt.Fprintf(&summary, "Extensions.Mod1 intermediate files after the sessions loaded:\n```\n%s\n```\n\n", listTree(probe, 80))
+	}
 
 	steps := []string{}
 	for c := 1; c <= cfg.cycles; c++ {
@@ -561,6 +620,8 @@ func TestBariCoexistence(t *testing.T) {
 	}
 
 	if len(sessions) != 0 {
+		fmt.Fprintf(&summary, "\nExtensions.Mod1 intermediate files at the end:\n```\n%s\n```\n", listTree(probe, 80))
+		fmt.Fprintf(&summary, "\nSession 1 server messages:\n```\n%s\n```\n", serverMessages(filepath.Join(cfg.output, "session-1.log"), 150))
 		summary.WriteString("\nLifecycle:\n\n")
 		processes := listProcesses(t)
 		for i, s := range sessions {
