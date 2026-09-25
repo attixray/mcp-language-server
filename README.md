@@ -171,6 +171,27 @@ This is an [MCP](https://modelcontextprotocol.io/introduction) server that runs 
   </div>
 </details>
 
+## .NET projects built by other tools
+
+Project and solution files (`.csproj`, `.sln`, `.slnx`, `.props`, `.targets`
+and the like) make .NET language servers reload the whole solution. When a
+build tool regenerates them, the bridge holds their events until the files have
+stayed unchanged for `--project-settle` (default `30s`). It then reports only
+content changes, all in one notification. The WPF markup compiler's temporary
+`*_wpftmp.*` projects and `obj/` directories are ignored.
+
+Design-time builds (csharp-ls, Visual Studio) write into a project's
+intermediate directory. If a project sets that directory unconditionally, point
+`CustomBeforeMicrosoftCommonTargets` at `DesignTimeIsolation.targets`. The file
+is included in the release archives and lives in `contrib/msbuild`. Set the
+variable in the language server's environment, so its design-time builds do not
+replace files a concurrent command-line build is using. See
+[docs/bari-coexistence.md](docs/bari-coexistence.md).
+
+On Windows the language server and its child processes exit with the bridge,
+even when the bridge is killed. The bridge also exits when the process that
+started it does.
+
 ## Tools
 
 - `definition`: Retrieves the complete source code definition of any symbol (function, type, constant, etc.) from your codebase.

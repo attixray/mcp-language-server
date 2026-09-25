@@ -79,6 +79,7 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 	dirs := make(map[string]bool)
 	files := make(map[string]bool)
 	pending := make(map[string]pendingEvent)
+	projects := newProjectGate(w.config.ProjectSettleTime)
 	queue := func(file string, kind protocol.FileChangeType) {
 		if previous, ok := pending[file]; ok && previous.kind == protocol.Created && kind == protocol.Changed {
 			kind = protocol.Created
@@ -107,6 +108,8 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 			} else if !w.shouldExcludeFile(file) {
 				if created && !files[file] {
 					queue(file, protocol.Created)
+				} else if !created && isProjectFile(file) {
+					projects.record(file)
 				}
 				files[file] = true
 			}
@@ -125,18 +128,30 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := time.Now()
 			for file, event := range pending {
-				if time.Now().Before(event.due) {
+				if now.Before(event.due) {
 					continue
 				}
 				delete(pending, file)
+				if isProjectFile(file) {
+					projects.hold(file, now)
+					continue
+				}
 				w.handleFileEvent(ctx, file, event.kind)
+			}
+			if changes := projects.due(now); len(changes) != 0 {
+				w.handleFileEvents(ctx, changes)
 			}
 		case event, ok := <-fs.Events:
 			if !ok {
 				return
 			}
 			file := filepath.Clean(event.Name)
+			if isBuildByproduct(file) {
+				projects.touch(time.Now())
+				continue
+			}
 			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 				if dirs[file] {
 					for known := range files {
@@ -186,31 +201,43 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 }
 
 func (w *WorkspaceWatcher) handleFileEvent(ctx context.Context, file string, kind protocol.FileChangeType) {
-	if ctx.Err() != nil {
-		return
-	}
-	// Open-document synchronization is independent of watched-file registration.
-	if w.client.IsFileOpen(file) {
-		if kind == protocol.Deleted {
-			if closer, ok := w.client.(interface {
-				CloseFile(context.Context, string) error
-			}); ok {
-				if err := closer.CloseFile(ctx, file); err != nil {
-					watcherLogger.Error("Error closing deleted file: %v", err)
+	w.handleFileEvents(ctx, []fileChange{{file, kind}})
+}
+
+// handleFileEvents reports changes that belong together in one notification.
+func (w *WorkspaceWatcher) handleFileEvents(ctx context.Context, changes []fileChange) {
+	var events []protocol.FileEvent
+	for _, change := range changes {
+		if ctx.Err() != nil {
+			return
+		}
+		file, kind := change.path, change.kind
+		// Open-document synchronization is independent of watched-file registration.
+		if w.client.IsFileOpen(file) {
+			if kind == protocol.Deleted {
+				if closer, ok := w.client.(interface {
+					CloseFile(context.Context, string) error
+				}); ok {
+					if err := closer.CloseFile(ctx, file); err != nil {
+						watcherLogger.Error("Error closing deleted file: %v", err)
+					}
+				}
+			} else {
+				if err := w.client.NotifyChange(ctx, file); err != nil {
+					watcherLogger.Error("Error syncing file: %v", err)
 				}
 			}
-		} else {
-			if err := w.client.NotifyChange(ctx, file); err != nil {
-				watcherLogger.Error("Error syncing file: %v", err)
-			}
+		}
+		watched, mask := w.isPathWatched(file)
+		required := map[protocol.FileChangeType]protocol.WatchKind{protocol.Created: protocol.WatchCreate, protocol.Changed: protocol.WatchChange, protocol.Deleted: protocol.WatchDelete}[kind]
+		if watched && mask&required != 0 {
+			events = append(events, protocol.FileEvent{URI: protocol.URIFromPath(file), Type: kind})
 		}
 	}
-	watched, mask := w.isPathWatched(file)
-	required := map[protocol.FileChangeType]protocol.WatchKind{protocol.Created: protocol.WatchCreate, protocol.Changed: protocol.WatchChange, protocol.Deleted: protocol.WatchDelete}[kind]
-	if !watched || mask&required == 0 {
+	if len(events) == 0 {
 		return
 	}
-	if err := w.client.DidChangeWatchedFiles(ctx, protocol.DidChangeWatchedFilesParams{Changes: []protocol.FileEvent{{URI: protocol.URIFromPath(file), Type: kind}}}); err != nil {
+	if err := w.client.DidChangeWatchedFiles(ctx, protocol.DidChangeWatchedFilesParams{Changes: events}); err != nil {
 		watcherLogger.Error("Error notifying file event: %v", err)
 	}
 }
@@ -330,7 +357,7 @@ func (w *WorkspaceWatcher) shouldExcludeFile(filePath string) bool {
 	}
 
 	// Skip temporary files
-	if strings.HasSuffix(filePath, "~") {
+	if strings.HasSuffix(filePath, "~") || isBuildByproduct(filePath) {
 		return true
 	}
 

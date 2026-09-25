@@ -1,0 +1,75 @@
+<Project>
+  <!--
+    Keeps language servers' design-time builds from interfering with a
+    command-line or Visual Studio build of the same projects.
+
+    Language servers built on Roslyn's MSBuildWorkspace (csharp-ls) run
+    design-time builds with DesignTimeBuild=true. For WPF projects these run
+    the markup compiler, which outside Visual Studio behaves like a real build:
+    it writes and deletes *.g.cs, *.baml and its caches in
+    $(IntermediateOutputPath), and it keeps every referenced assembly locked
+    while it runs. When a project sets IntermediateOutputPath unconditionally,
+    as bari's generated projects do, a design-time build and a real build
+    share one directory and replace each other's files mid-build (CS2001,
+    BG1002), and a locked output makes copies retry (MSB3026), a clean fail
+    ("Failed to clean target root") or a C++/CLI link fail (LNK1104).
+
+    Point the language server at this file through the environment:
+
+      CustomBeforeMicrosoftCommonTargets=<path to this file>
+
+    MSBuild reads environment variables as properties and imports this file at
+    the start of Microsoft.Common.CurrentVersion.targets, after the project
+    body and before any property is derived from IntermediateOutputPath.
+    Command-line builds may import it as well; it changes nothing for them.
+    Visual Studio's own design-time builds are left alone unless
+    DesignTimeIsolationInVisualStudio is true: its up-to-date check reads
+    intermediate paths from them.
+  -->
+  <PropertyGroup>
+    <_DesignTimeIsolation Condition="'$(DesignTimeBuild)' == 'true' and '$(IntermediateOutputPath)' != '' and ('$(BuildingInsideVisualStudio)' != 'true' or '$(DesignTimeIsolationInVisualStudio)' == 'true')">true</_DesignTimeIsolation>
+  </PropertyGroup>
+
+  <!-- Design-time output goes to a directory of its own. -->
+  <PropertyGroup Condition="'$(_DesignTimeIsolation)' == 'true'">
+    <IntermediateOutputPath Condition="!HasTrailingSlash('$(IntermediateOutputPath)')">$(IntermediateOutputPath)\</IntermediateOutputPath>
+    <IntermediateOutputPath>$(IntermediateOutputPath)designtime\</IntermediateOutputPath>
+  </PropertyGroup>
+
+  <!--
+    The markup compiler gets copies of the references that are build outputs
+    (not framework or package assemblies), so it never locks the files a build
+    replaces. The original references are restored before CoreCompile, so the
+    language server still sees the real paths. Transitive project references
+    come from the assets file and carry NuGetPackageId, so project references
+    are matched by ReferenceSourceTarget first.
+  -->
+  <Target Name="_DesignTimeIsolationCopyMarkupReferences" BeforeTargets="MarkupCompilePass1"
+          Condition="'$(_DesignTimeIsolation)' == 'true' and '@(Page)@(ApplicationDefinition)' != ''">
+    <ItemGroup>
+      <_DesignTimeIsolationReference Include="@(ReferencePath)"
+          Condition="'%(ReferencePath.ReferenceSourceTarget)' == 'ProjectReference' or ('%(ReferencePath.FrameworkFile)' != 'true' and '%(ReferencePath.NuGetPackageId)' == '' and '%(ReferencePath.FrameworkReferenceName)' == '')" />
+      <_DesignTimeIsolationReference>
+        <DesignTimeCopy>$(IntermediateOutputPath)references\%(Filename)%(Extension)</DesignTimeCopy>
+      </_DesignTimeIsolationReference>
+    </ItemGroup>
+    <Copy SourceFiles="@(_DesignTimeIsolationReference)"
+          DestinationFiles="@(_DesignTimeIsolationReference->'%(DesignTimeCopy)')"
+          SkipUnchangedFiles="true" Retries="0" ContinueOnError="true" />
+    <ItemGroup>
+      <_DesignTimeIsolationSwapped Include="@(_DesignTimeIsolationReference)" Condition="Exists('%(DesignTimeCopy)')" />
+      <ReferencePath Remove="@(_DesignTimeIsolationSwapped)" />
+      <ReferencePath Include="@(_DesignTimeIsolationSwapped->'%(DesignTimeCopy)')" />
+      <_DesignTimeIsolationReference Remove="@(_DesignTimeIsolationReference)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_DesignTimeIsolationRestoreMarkupReferences" AfterTargets="MarkupCompilePass1"
+          Condition="'@(_DesignTimeIsolationSwapped)' != ''">
+    <ItemGroup>
+      <ReferencePath Remove="@(_DesignTimeIsolationSwapped->'%(DesignTimeCopy)')" />
+      <ReferencePath Include="@(_DesignTimeIsolationSwapped)" />
+      <_DesignTimeIsolationSwapped Remove="@(_DesignTimeIsolationSwapped)" />
+    </ItemGroup>
+  </Target>
+</Project>

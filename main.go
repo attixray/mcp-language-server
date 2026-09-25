@@ -23,9 +23,10 @@ import (
 var coreLogger = logging.NewLogger(logging.Core)
 
 type config struct {
-	workspaceDir string
-	lspCommand   string
-	lspArgs      []string
+	workspaceDir  string
+	lspCommand    string
+	lspArgs       []string
+	projectSettle time.Duration
 }
 
 type mcpServer struct {
@@ -44,6 +45,8 @@ func parseConfig() (*config, error) {
 	cfg := &config{}
 	flag.StringVar(&cfg.workspaceDir, "workspace", "", "Path to workspace directory")
 	flag.StringVar(&cfg.lspCommand, "lsp", "", "LSP command to run (args should be passed after --)")
+	flag.DurationVar(&cfg.projectSettle, "project-settle", watcher.DefaultWatcherConfig().ProjectSettleTime,
+		"How long project and solution files must stay unchanged before their changes are reported")
 	flag.Parse()
 
 	// Get remaining args after -- as LSP arguments
@@ -102,7 +105,11 @@ func (s *mcpServer) initializeLSP() error {
 	}
 	s.lspClient = client
 	s.lifecycleMu.Unlock()
-	s.workspaceWatcher = watcher.NewWorkspaceWatcher(client)
+	watcherConfig := watcher.DefaultWatcherConfig()
+	if s.config.projectSettle > 0 {
+		watcherConfig.ProjectSettleTime = s.config.projectSettle
+	}
+	s.workspaceWatcher = watcher.NewWorkspaceWatcherWithConfig(client, watcherConfig)
 
 	initResult, err := client.InitializeLSPClient(s.ctx, s.config.workspaceDir)
 	if err != nil {
@@ -144,6 +151,9 @@ func main() {
 	if err != nil {
 		coreLogger.Fatal("%v", err)
 	}
+	if err := containChildren(); err != nil {
+		coreLogger.Warn("Language server processes may outlive the bridge: %v", err)
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -158,22 +168,12 @@ func main() {
 func runServer(s *mcpServer, signals <-chan os.Signal) error {
 	startDone := make(chan error, 1)
 	go func() { startDone <- s.start() }()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	parent := os.Getppid()
 	var result error
-running:
-	for {
-		select {
-		case result = <-startDone:
-			break running
-		case <-signals:
-			break running
-		case <-ticker.C:
-			if parent != 1 && os.Getppid() == 1 {
-				break running
-			}
-		}
+	select {
+	case result = <-startDone:
+	case <-signals:
+	case <-watchParent():
+		coreLogger.Info("Parent process exited; shutting down")
 	}
 	s.cleanup()
 	if errors.Is(result, context.Canceled) {

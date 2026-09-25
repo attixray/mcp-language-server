@@ -27,6 +27,10 @@ type WatcherConfig struct {
 	// DebounceTime is the duration to wait before sending file change events
 	DebounceTime time.Duration
 
+	// ProjectSettleTime is how long project and solution files must stay
+	// unchanged before their net changes are reported
+	ProjectSettleTime time.Duration
+
 	// ExcludedDirs are directory names that should be excluded from watching
 	ExcludedDirs map[string]bool
 
@@ -43,7 +47,8 @@ type WatcherConfig struct {
 // DefaultWatcherConfig returns a configuration with sensible defaults
 func DefaultWatcherConfig() *WatcherConfig {
 	return &WatcherConfig{
-		DebounceTime: 300 * time.Millisecond,
+		DebounceTime:      300 * time.Millisecond,
+		ProjectSettleTime: 30 * time.Second,
 		ExcludedDirs: map[string]bool{
 			".git":         true,
 			"node_modules": true,
@@ -51,6 +56,7 @@ func DefaultWatcherConfig() *WatcherConfig {
 			"build":        true,
 			"out":          true,
 			"bin":          true,
+			"obj":          true, // .NET intermediate output
 			".idea":        true,
 			".vscode":      true,
 			".cache":       true,

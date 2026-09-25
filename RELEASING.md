@@ -5,8 +5,9 @@ navigation on Windows, Linux and macOS, then builds six standalone binaries:
 Windows/Linux/macOS (`darwin`), each for `amd64` and `arm64`. Windows downloads
 are ZIP files; Linux and macOS downloads are tar.gz files.
 
-Each archive contains the binary, license, README and BUILD-INFO.json with the
-source commit and compiler version. SHA256SUMS covers all six archives. The
+Each archive contains the binary, license, README, BUILD-INFO.json with the
+source commit and compiler version, and DesignTimeIsolation.targets (see
+[docs/bari-coexistence.md](docs/bari-coexistence.md)). SHA256SUMS covers all six archives. The
 workflow verifies checksums, uploads to a draft release, and publishes only
 after all uploads succeed. Tags containing a hyphen produce prereleases.
 
