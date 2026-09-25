@@ -195,9 +195,9 @@ function New-ProjectXml($p) {
     Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -notlike '*_wpftmp.csproj' } | Sort-Object FullName | ForEach-Object {
         $relPath = $_.FullName.Substring($dir.Length + 1)
         switch -Wildcard ($_.Name) {
-            'App.xaml' { [void]$items.AppendLine("    <ApplicationDefinition Include=`"$relPath`" />") }
-            '*.xaml' { [void]$items.AppendLine("    <Page Include=`"$relPath`" />") }
-            '*.cs' { [void]$items.AppendLine("    <Compile Include=`"$relPath`" />") }
+            'App.xaml' { [void]$items.AppendLine("    <ApplicationDefinition Include=`"$relPath`" />"); break }
+            '*.xaml' { [void]$items.AppendLine("    <Page Include=`"$relPath`" />"); break }
+            '*.cs' { [void]$items.AppendLine("    <Compile Include=`"$relPath`" />"); break }
         }
     }
     $refs = New-Object System.Text.StringBuilder
