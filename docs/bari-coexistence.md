@@ -380,7 +380,7 @@ clone, next to the old `C:\Bari`.
 |---|---|---|
 | build of `sp-jd` (C#, F#, C++/CLI, NuGet, Python postprocessors) | pass | pass: 91 s first build, 3 s up to date |
 | add-on load with no solution open | 2 s | 1.9 s |
-| add-on load after a direct `.sln` open | about 60 s | about 61 s (see residual risks) |
+| add-on load after a direct `.sln` open | about 60 s | about 61 s (HgSccPackage; see [below](#slow-solution-open-hgsccpackage-not-bari)) |
 | Cancel | about 21 s; bari crashed writing to the closed pipe | whole tree gone within 0.6 s of bari; clean Build pane |
 | clean + rebuild ×3 with the solution open | every step warned: DevHub held a `target\.vs\…\*.vsidx` | no warning; `target\.vs` kept |
 | project files after a clean | new `<ProjectGuid>` in each | 99 files byte-identical, and the `.sln` |
@@ -408,6 +408,30 @@ Its findings are fixed in attixray/bari#6 and add-on 1.12.8: a refused update
 deleted `.previous`, held files were retried one at a time, the list was
 unordered, and builds logged nothing.
 
+### Slow solution open: HgSccPackage, not bari
+
+Opening `sp-jd` took 55-60 s, and the add-on's package load waited for it.
+The cause is the Mercurial source-control extension HgSccPackage 2.0.8, not
+the generated projects:
+
+- With GUIDs mapped to project names, the 74 projects that bari 1.0.3.68 and
+  1.1.0 generate are identical. The old `.sln` has five extra `Bari|Bari`
+  configuration lines for projects no longer in it; `GDTApi.vcxproj` differs
+  by one line break.
+- During the open, devenv was mostly idle while HgSccPackage ran `hg root`
+  170-190 times in series, about 0.22 s each.
+- The old bari's projects opened just as slowly: 58 s and 60 s, with 170
+  `hg root` calls each. The earlier "about 8 s" did not reproduce. Moving
+  `.vs\ProjectEvaluation` aside or swapping the `.suo` changed nothing, and
+  Visual Studio itself offered to disable HgSccPackage to speed up solution
+  load.
+- With HgSccPackage uninstalled, reopens in one Visual Studio session took
+  2.7-2.9 s with bari 1.1.0's projects and 3.1-3.4 s with the old ones, and
+  started no `hg` process.
+
+The same wait explains the late add-on load after a direct `.sln` open:
+Visual Studio holds background package loads until the solution has loaded.
+
 ## Residual risks
 
 - csharp-ls lists every `*.sln` under the workspace on load
@@ -420,16 +444,11 @@ unordered, and builds logged nothing.
   structure.
 - If the variable is set user-wide, removing the file silently turns the
   isolation off: MSBuild skips a missing file. Keep the file at a stable path.
-- **Opening `sp-jd` takes about 58 s with the projects bari 1.1.0 generates,
-  and is much faster with those of the old `C:\Bari` 1.0.3.68** (the owner
-  sees the 74 projects load about ten times faster, the slowdown growing
-  towards the end). Visual Studio holds the add-on's background load until the
-  solution has loaded, so a build clicked before that can run as an ordinary
-  MSBuild build; in the tests such a build still went through bari. The
-  add-on is not the cause: with the package already loaded, the log shows
-  58 s between `OnBeforeOpenSolution` and `OnAfterOpenSolution`, and the
-  add-on's own work after that took 0.4 s. The difference between the two
-  bari versions' generated `.sln` and project files is under investigation.
+- Visual Studio holds the add-on's background load until the solution has
+  loaded, so a build clicked before that can run as an ordinary MSBuild
+  build; in the tests such a build still went through bari. The window is
+  about 3 s on `sp-jd`, or about a minute with HgSccPackage installed (see
+  [Slow solution open](#slow-solution-open-hgsccpackage-not-bari)).
 - Only a unit test covers the fix for bari crashing on a closed console. The
   local test could not reproduce the crash with the old bari either, and the
   add-on's job-object Cancel no longer leaves bari running against a closed
