@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -94,6 +96,7 @@ type stepResult struct {
 	cs2001      int
 	bg1002      int
 	sharing     int
+	copyRetries int
 	targetClean int
 	errors      []string
 	reloads     []int64
@@ -104,7 +107,9 @@ type stepResult struct {
 func (r stepResult) failed() bool { return r.exitCode != 0 || len(r.errors) != 0 }
 
 var (
-	errorLine = regexp.MustCompile(`(?m)^.*(?:: error [A-Z]+\d+|being used by another process|Failed to clean target root).*$`)
+	// Failures: build errors, a failed clean of target/, and bari's clean
+	// failing to delete a project file. Copy retries (MSB3026) are warnings.
+	errorLine = regexp.MustCompile(`(?m)^.*(?:: error [A-Z]+\d+|Failed to clean target root|IOException: The process cannot access).*$`)
 	holders   = regexp.MustCompile(`(?m)^REPRO-HOLDERS .*$`)
 )
 
@@ -135,7 +140,8 @@ func runBari(t *testing.T, cfg reproConfig, command, logName string) stepResult 
 	text := string(output)
 	result.cs2001 = strings.Count(text, "error CS2001")
 	result.bg1002 = strings.Count(text, "error BG1002")
-	result.sharing = strings.Count(text, "being used by another process")
+	result.sharing = strings.Count(text, "IOException: The process cannot access")
+	result.copyRetries = strings.Count(text, "warning MSB3026")
 	result.targetClean = strings.Count(text, "Failed to clean target root")
 	seen := map[string]bool{}
 	for _, line := range errorLine.FindAllString(text, -1) {
@@ -185,6 +191,39 @@ func markupOutputsSince(root string, since time.Time) (count int) {
 		return nil
 	})
 	return count
+}
+
+// probeLocks repeatedly opens the build's output assemblies for writing, as a
+// build replacing them would, and counts sharing violations: another process
+// holding the file open without FILE_SHARE_WRITE.
+func probeLocks(target string, duration time.Duration) (attempts, locked int, files map[string]int) {
+	var outputs []string
+	entries, _ := os.ReadDir(target)
+	for _, module := range entries {
+		if !module.IsDir() || module.Name() == "tmp" {
+			continue
+		}
+		dlls, _ := filepath.Glob(filepath.Join(target, module.Name(), "*.dll"))
+		outputs = append(outputs, dlls...)
+	}
+	files = map[string]int{}
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		for _, file := range outputs {
+			attempts++
+			f, err := os.OpenFile(file, os.O_WRONLY, 0)
+			if err == nil {
+				_ = f.Close()
+				continue
+			}
+			if errors.Is(err, syscall.Errno(32)) { // ERROR_SHARING_VIOLATION
+				locked++
+				files[filepath.Base(file)]++
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return attempts, locked, files
 }
 
 // ------------------------------------------------------------------- MCP
@@ -547,14 +586,14 @@ func (r *report) fail(format string, args ...any) {
 }
 
 func (r *report) stepHeader() {
-	r.printf("| step | exit | time | CS2001 | BG1002 | sharing violation | target clean failed | reload notices | files in designtime dirs |\n")
-	r.printf("|---|---|---|---|---|---|---|---|---|\n")
+	r.printf("| step | exit | time | CS2001 | BG1002 | project delete failed | target clean failed | copy retries (MSB3026) | reload notices | files in designtime dirs |\n")
+	r.printf("|---|---|---|---|---|---|---|---|---|---|\n")
 }
 
 func (r *report) step(result stepResult) {
-	r.printf("| %s | %d | %s | %d | %d | %d | %d | %v | %d |\n", result.name, result.exitCode,
+	r.printf("| %s | %d | %s | %d | %d | %d | %d | %d | %v | %d |\n", result.name, result.exitCode,
 		result.duration.Round(time.Second), result.cs2001, result.bg1002, result.sharing, result.targetClean,
-		result.reloads, result.isolated)
+		result.copyRetries, result.reloads, result.isolated)
 	if result.failed() {
 		r.fail("%s: exit %d: %s", result.name, result.exitCode, strings.Join(result.errors, " | "))
 		r.failures = append(r.failures, result.holders...)
@@ -726,9 +765,11 @@ func TestDesignTimeRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = loop.Process.Kill() }()
-	time.Sleep(30 * time.Second)
-	r.printf("WPF markup outputs in the build's intermediate directories rewritten by design-time builds alone: %d; files in designtime dirs: %d\n\n",
-		markupOutputsSince(tmp, built), countIsolated(tmp))
+	attempts, locked, lockedFiles := probeLocks(filepath.Join(cfg.workspace, "target"), 30*time.Second)
+	r.printf("While design-time builds ran alone for 30 s:\n\n")
+	r.printf("- WPF markup outputs rewritten in the build's intermediate directories: %d\n", markupOutputsSince(tmp, built))
+	r.printf("- files in designtime dirs: %d\n", countIsolated(tmp))
+	r.printf("- output assemblies found locked against writing: %d of %d attempts %v\n\n", locked, attempts, lockedFiles)
 
 	r.stepHeader()
 	for i, command := range cycleSteps(cfg.cycles, "build", "rebuild") {
