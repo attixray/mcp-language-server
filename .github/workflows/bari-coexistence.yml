@@ -1,0 +1,85 @@
+name: bari coexistence reproduction
+
+# Reproduces bari builds failing while csharp-ls sessions are loaded on the
+# same working copy. See integrationtests/repro/bari/README.md.
+on:
+  push:
+    branches: ['claude/**']
+    paths:
+      - '.github/workflows/bari-coexistence.yml'
+      - 'integrationtests/repro/bari/**'
+      - 'contrib/msbuild/**'
+      - '*.go'
+      - 'internal/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: ${{ matrix.name }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: control, no language server
+            sessions: 0
+            bridge: head
+          - name: baseline bridge v0.1.1-attixray.2
+            sessions: 2
+            bridge: baseline
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install csharp-ls 0.28.0
+        shell: pwsh
+        run: |
+          dotnet tool install --global csharp-ls --version 0.28.0
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - name: Build bridge under test
+        shell: pwsh
+        run: |
+          if ('${{ matrix.bridge }}' -eq 'baseline') {
+            git worktree add "$env:RUNNER_TEMP\baseline" 4f65c41
+            Push-Location "$env:RUNNER_TEMP\baseline"
+            go build -o "$env:RUNNER_TEMP\bridge.exe"
+            Pop-Location
+          } else {
+            go build -o "$env:RUNNER_TEMP\bridge.exe"
+          }
+      - name: Reproduce
+        shell: pwsh
+        env:
+          BARI_REPRO: '1'
+          REPRO_NAME: ${{ matrix.name }}
+          REPRO_SESSIONS: ${{ matrix.sessions }}
+          REPRO_CYCLES: '3'
+          REPRO_SESSION_ENV: ${{ matrix.session_env }}
+          REPRO_WORKSPACE_FILES: ${{ matrix.workspace_files }}
+        run: |
+          $env:BRIDGE_BIN = "$env:RUNNER_TEMP\bridge.exe"
+          $env:REPRO_OUTPUT = "$env:RUNNER_TEMP\bari-repro"
+          if ($env:REPRO_WORKSPACE_FILES) {
+            $env:REPRO_WORKSPACE_FILES = ($env:REPRO_WORKSPACE_FILES -split ';' | ForEach-Object { Resolve-Path $_ }) -join ';'
+          }
+          $env:REPRO_SESSION_ENV = $env:REPRO_SESSION_ENV -replace '\{repo\}', $PWD
+          go test -v -count=1 -timeout 110m -run '^TestBariCoexistence$' ./integrationtests/repro/bari/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: bari-repro-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/bari-repro/*.log
+            ${{ runner.temp }}/bari-repro/summary.md
+          retention-days: 14
