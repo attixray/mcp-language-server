@@ -24,7 +24,7 @@ while `csharp-ls` sessions are loaded on the same tree: from this bridge
     0 locks in 52 207 probes, against 226 without it.
   - bari-vs-addon's solution watcher hashes project files in devenv.exe
     without `FILE_SHARE_DELETE`, which can fail `CsprojCleaner`. It is fixed
-    on the add-on's `claude/new-session-mup5f0` branch.
+    in add-on 1.12.3 (attixray/bari-vs-addon#1).
 - **H4:** csharp-ls exits when its bridge dies. The bridge now also exits when
   its parent does. A job object takes the language server's process tree down
   with the bridge.
@@ -263,8 +263,8 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 ## Visual Studio builds and bari-vs-addon
 
-The installed add-on is 1.12.2, now in `attixray/bari-vs-addon` (`master`,
-`d42404b`). `zvrana/bari-vs-addon` holds only the 2014 code.
+The installed add-on is 1.12.2 (`attixray/bari-vs-addon` at `d42404b`);
+`zvrana/bari-vs-addon` holds only the 2014 code. The fixes below are in 1.12.3.
 
 - **Solution and selection commands.** The add-on intercepts Build, Rebuild
   and Clean Solution, Build and Rebuild Selection, Start Without Debugging,
@@ -285,8 +285,9 @@ The installed add-on is 1.12.2, now in `attixray/bari-vs-addon` (`master`,
 - **Visual Studio's own design-time builds** are excluded by default
   (`BuildingInsideVisualStudio`): its fast up-to-date check reads intermediate
   paths from them. `DesignTimeIsolationInVisualStudio=true` includes them.
-- **Add-on fixes** on `attixray/bari-vs-addon` branch `claude/new-session-mup5f0`,
-  built by its new `Build VSIX` workflow (run 36107587221, green):
+- **Add-on fixes** in 1.12.3, merged to `attixray/bari-vs-addon` `master` by
+  attixray/bari-vs-addon#1 and built by its new `Build VSIX` workflow
+  (run 36111077961, green):
   - the solution watcher opens files with `FileShare.Delete`, treats files
     that vanish or cannot be read as absent instead of faulting the check,
     and ignores `*_wpftmp.*` (see H3);
@@ -402,11 +403,10 @@ The installed add-on is 1.12.2, now in `attixray/bari-vs-addon` (`master`,
 
    The arguments stay as they are. `--project-settle 30s` is the default.
 
-4. **Install the fixed add-on.** From the latest green `Build VSIX` run of
-   `attixray/bari-vs-addon` on branch `claude/new-session-mup5f0`, download the
-   `BariVSPackage-vsix` artifact, close Visual Studio, and open the `.vsix`.
-   Its version is still 1.12.2, so uninstall the installed one first if the
-   installer refuses.
+4. **Install the fixed add-on (1.12.3).** From the latest green `Build VSIX`
+   run of `attixray/bari-vs-addon` on `master`, download the
+   `BariVSPackage.vsix` artifact (GitHub wraps it in a zip), close Visual
+   Studio, and open the `.vsix`.
 
 5. **Optional, while running the acceptance steps:** add
    `LOG_LEVEL = 'INFO'` and
