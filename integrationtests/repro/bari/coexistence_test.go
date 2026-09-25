@@ -152,6 +152,14 @@ func runBari(t *testing.T, cfg reproConfig, command, logName string) stepResult 
 			result.errors = append(result.errors, line)
 		}
 	}
+	if result.failed() && len(result.errors) == 0 {
+		// An unrecognised failure, e.g. a PowerShell exception: keep its last lines.
+		lines := strings.Split(strings.TrimSpace(text), "\n")
+		if len(lines) > 12 {
+			lines = lines[len(lines)-12:]
+		}
+		result.errors = append(result.errors, strings.Join(lines, " | "))
+	}
 	result.holders = holders.FindAllString(text, -1)
 	result.isolated = countIsolated(filepath.Join(cfg.workspace, "target", "tmp"))
 	return result
