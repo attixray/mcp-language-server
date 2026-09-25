@@ -18,7 +18,13 @@ while `csharp-ls` sessions are loaded on the same tree: from this bridge
   - `DesignTimeIsolation.targets`, set through the language server's
     environment, moves design-time builds into their own directory. This also
     covers the Claude Code plugin.
-- **H3:** see [H3](#h3-handles-without-share-delete).
+- **H3 is real on two paths.**
+  - Design-time markup compilation locks referenced build outputs (MSB3026,
+    "Failed to clean target root"). The targets file now hands it copies:
+    0 locks in 52 207 probes, against 226 without it.
+  - bari-vs-addon's solution watcher hashes project files in devenv.exe
+    without `FILE_SHARE_DELETE`, which can fail `CsprojCleaner`. It is fixed
+    on the add-on's `claude/new-session-mup5f0` branch.
 - **H4:** csharp-ls exits when its bridge dies. The bridge now also exits when
   its parent does. A job object takes the language server's process tree down
   with the bridge.
@@ -169,13 +175,40 @@ builds racing bari builds caused:
 
 Isolation moves writes, not reads. So `DesignTimeIsolation.targets` also gives
 the design-time markup compiler copies of the references that are build
-outputs, and restores the real references before `CoreCompile`. Verification
-of that change: PENDING-REFCOPY.
+outputs, and restores the real references before `CoreCompile`.
 
-**Not established:** which process held `EvolveHelp.csproj` on the owner's
-machine. It could also be antivirus or an MSBuild node. Deleting project files
-while design-time builds read them did not fail in any run so far. `bari.ps1`
-records holders through the Restart Manager whenever a delete fails.
+The race probes every output assembly for writing while design-time builds
+run alone for 30 s, and asks the Restart Manager who holds a locked one:
+
+| run | variant | locked / attempts | holders |
+|---|---|---|---|
+| 36104835546 | no isolation | 226 / 48 248 | |
+| 36104835546 | copies of direct references only | 127 / 48 840 | |
+| 36106161468 | copies of direct references only | 40 / 43 290 | the `dotnet msbuild` design-time build of each project that references the locked output *transitively*, e.g. `Extensions.Mod1.dll` held by the builds of Mod3–Mod6 and Shell |
+| 36106714461 | direct and transitive copies | **0 / 48 914** | |
+| 36107210717 | direct and transitive copies | **0 / 52 207** | |
+
+Transitive project references come from the assets file with
+`NuGetPackageId` set, so the first filter treated them as packages. Project
+references are now matched by `ReferenceSourceTarget`. With the copies, no
+race step showed MSB3026 or "Failed to clean target root", and the sessions
+with isolation still answered definition and references correctly, so the
+real references are restored.
+
+**bari-vs-addon holds project files too.** The add-on (1.12.2) watches
+`src/` from devenv.exe and, 330 ms after a change, MD5-hashes every
+project and source file in the changed directories with
+`FileShare.ReadWrite`, without `FileShare.Delete`. A bari clean deleting the
+generated `.csproj` files, or the markup compiler deleting its
+`*_wpftmp.csproj`, triggers exactly that. Visual Studio was most likely open
+when `EvolveHelp.csproj` could not be deleted, so devenv.exe is the most
+likely holder there; this was not observed on the owner's machine. See
+[Visual Studio builds and bari-vs-addon](#visual-studio-builds-and-bari-vs-addon).
+
+**Not established:** the holder of `EvolveHelp.csproj` on the owner's machine.
+Deleting project files while design-time builds read them did not fail in
+any run. `bari.ps1` records holders through the Restart Manager whenever a
+delete fails.
 
 **Metadata references are not locked.** A loaded csharp-ls holds no lock on
 output assemblies between loads. Roslyn's `MetadataService` reads metadata
@@ -230,14 +263,19 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 ## Visual Studio builds and bari-vs-addon
 
-- **Solution-level commands.** `zvrana/bari-vs-addon` (the `attixray` fork is
-  at the same commit, `2592538`) intercepts Build, Rebuild and Clean Solution,
+The installed add-on is 1.12.2, now in `attixray/bari-vs-addon` (`master`,
+`d42404b`). `zvrana/bari-vs-addon` holds only the 2014 code.
+
+- **Solution and selection commands.** The add-on intercepts Build, Rebuild
+  and Clean Solution, Build and Rebuild Selection, Start Without Debugging,
   and Start when a build is needed. It runs
   `bari --target <goal> <action> <product>` in the Suite root. These are bari
-  builds and are covered like command-line ones.
-- **Project-level builds.** Build Project/Selection, and C++ projects built
-  directly, bypass the add-on. MSBuild builds into the same `target/tmp`
-  directories and does not regenerate project files:
+  builds and are covered like command-line ones. Cancel kills bari's whole
+  process tree.
+- **Project context-menu builds.** Build, Rebuild and Clean from a project's
+  context menu (`BuildCtx`, `RebuildCtx`, `CleanCtx`, `CleanSel`), and C++
+  projects built directly, bypass the add-on. MSBuild builds into the same
+  `target/tmp` directories and does not regenerate project files:
   - the bridge ignores the `*_wpftmp.csproj` churn;
   - with the variable set, design-time builds write elsewhere;
   - the reference copies keep design-time builds from locking the outputs
@@ -247,10 +285,13 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 - **Visual Studio's own design-time builds** are excluded by default
   (`BuildingInsideVisualStudio`): its fast up-to-date check reads intermediate
   paths from them. `DesignTimeIsolationInVisualStudio=true` includes them.
-- **Add-on issue unrelated to language servers.** Cancel kills only
-  `bari.exe`, not the MSBuild processes it started. A cancelled build can keep
-  writing `target/` while the next one starts. Fixing this in the add-on
-  needs owner approval.
+- **Add-on fixes** on `attixray/bari-vs-addon` branch `claude/new-session-mup5f0`,
+  built by its new `Build VSIX` workflow (run 36107587221, green):
+  - the solution watcher opens files with `FileShare.Delete`, treats files
+    that vanish or cannot be read as absent instead of faulting the check,
+    and ignores `*_wpftmp.*` (see H3);
+  - bari's stderr is drained; it was redirected and never read, so a bari
+    writing enough to it would block and the build would never finish.
 
 ## Coverage
 
@@ -258,7 +299,7 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 |---|---|---|---|---|
 | Codex through this bridge | yes, with the variable set | yes | reads during builds removed | yes |
 | Claude Code `csharp-lsp` plugin | yes, if its process has the variable | depends on Claude Code's file watching; not changed here | not changed | not changed |
-| Visual Studio builds (add-on → bari, or project-level) vs. language servers | yes, with the variable set | yes (no project regeneration; wpftmp ignored) | reference copies, if verified | n/a |
+| Visual Studio builds (add-on → bari, or project-level) vs. language servers | yes, with the variable set | yes (no project regeneration; wpftmp ignored) | yes: reference copies; add-on watcher fixed | n/a |
 | Visual Studio's own design-time builds | only with `DesignTimeIsolationInVisualStudio=true` | no | no | n/a |
 | Two real builds at once (VS project build during a bari build) | no: they share one directory | | | |
 
@@ -289,8 +330,10 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
   environment variable.
 - Write `.csproj` and `.sln` only when their content changes. The churn then
   goes away at the source, for every watcher.
-- Retry sharing violations in `CsprojCleaner`, with a short back-off and the
-  holder in the message.
+- Retry sharing violations in `CsprojCleaner` and in the clean of `target/`,
+  with a short back-off and the holder in the message.
+- Derive project GUIDs from project names instead of `cache/<goal>/guids`,
+  so a clean regenerates identical project files.
 
 ## Residual risks
 
@@ -316,7 +359,7 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
    check the rest.
 4. Which bari revision is `C:\Bari\bari.exe` 1.0.3.68? **`9386ad0`**, by its
    build time (see H2).
-5. Open: approve the bari follow-ups below, and the add-on cancel fix?
+5. Open: which of the bari follow-ups below to make?
 
 ## Installation (owner)
 
@@ -359,7 +402,13 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
    The arguments stay as they are. `--project-settle 30s` is the default.
 
-4. **Optional, while running the acceptance steps:** add
+4. **Install the fixed add-on.** From the latest green `Build VSIX` run of
+   `attixray/bari-vs-addon` on branch `claude/new-session-mup5f0`, download the
+   `BariVSPackage-vsix` artifact, close Visual Studio, and open the `.vsix`.
+   Its version is still 1.12.2, so uninstall the installed one first if the
+   installer refuses.
+
+5. **Optional, while running the acceptance steps:** add
    `LOG_LEVEL = 'INFO'` and
    `LOG_FILE = 'C:\Users\Attila\.local\share\mcp-language-server\bridge.log'`
    under `[mcp_servers.csharp-lsp.env]`. The log then shows every
@@ -367,8 +416,9 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 ## Acceptance (owner)
 
-1. Start one Codex session and one Claude Code session on `C:\Actuals\Suite`.
-   In each, ask for a definition, so csharp-ls has loaded the solution.
+1. Open the Suite solution in Visual Studio with the fixed add-on, and start
+   one Codex session and one Claude Code session on `C:\Actuals\Suite`. In
+   each session, ask for a definition, so csharp-ls has loaded the solution.
 2. Confirm that isolation is active: this count should be above zero.
 
    ```powershell
