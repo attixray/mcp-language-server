@@ -380,7 +380,7 @@ clone, next to the old `C:\Bari`.
 |---|---|---|
 | build of `sp-jd` (C#, F#, C++/CLI, NuGet, Python postprocessors) | pass | pass: 91 s first build, 3 s up to date |
 | add-on load with no solution open | 2 s | 1.9 s |
-| add-on load after a direct `.sln` open | about 60 s | about 61 s (HgSccPackage; see [below](#slow-solution-open-hgsccpackage-not-bari)) |
+| add-on load after a direct `.sln` open | about 60 s | about 61 s (HgSccPackage 2.0.8, fixed in 2.0.9; see [below](#slow-solution-open-hgsccpackage-not-bari)) |
 | Cancel | about 21 s; bari crashed writing to the closed pipe | whole tree gone within 0.6 s of bari; clean Build pane |
 | clean + rebuild ×3 with the solution open | every step warned: DevHub held a `target\.vs\…\*.vsidx` | no warning; `target\.vs` kept |
 | project files after a clean | new `<ProjectGuid>` in each | 99 files byte-identical, and the `.sln` |
@@ -432,6 +432,18 @@ the generated projects:
 The same wait explains the late add-on load after a direct `.sln` open:
 Visual Studio holds background package loads until the solution has loaded.
 
+**Fixed in HgSccPackage 2.0.9**
+([attixray/HgSccPackage v2.0.9](https://github.com/attixray/HgSccPackage/releases/tag/v2.0.9)).
+It finds the repository root without starting `hg`, and solution folders use
+the solution's repository. With 2.0.9 as the active provider, warm reopens of
+`sp-jd` took 3.4-5.0 s over ten runs, with ReSharper on or suspended. No
+`hg root` ran; each open started one `hg serve --cmdserver pipe`, which exits
+when the solution closes. Status glyphs showed in Solution Explorer.
+
+Right after Visual Studio started, some reopens took 36-93 s. Stack samples
+from an attached debugger showed only ReSharper's background indexing, with no
+HgSccPackage frames. Once the indexing finished, every reopen was fast again.
+
 ## Residual risks
 
 - csharp-ls lists every `*.sln` under the workspace on load
@@ -447,7 +459,8 @@ Visual Studio holds background package loads until the solution has loaded.
 - Visual Studio holds the add-on's background load until the solution has
   loaded, so a build clicked before that can run as an ordinary MSBuild
   build; in the tests such a build still went through bari. The window is
-  about 3 s on `sp-jd`, or about a minute with HgSccPackage installed (see
+  about 3-5 s on `sp-jd`. It is about a minute with HgSccPackage 2.0.8 or
+  earlier, and longer while ReSharper indexes after Visual Studio starts (see
   [Slow solution open](#slow-solution-open-hgsccpackage-not-bari)).
 - Only a unit test covers the fix for bari crashing on a closed console. The
   local test could not reproduce the crash with the old bari either, and the
