@@ -311,6 +311,11 @@ At the start of this work the installed add-on was 1.12.2
   - Cancel terminates a job object that holds bari and everything it starts,
     instead of walking the process tree with WMI while bari keeps running;
   - log4net 2.0.8 → 3.4.0.
+- **Add-on 1.12.7–1.12.8**, merged by attixray/bari-vs-addon#4:
+  - the Logging option takes effect on OK, without restarting Visual Studio;
+  - the log records each bari command with its exit code or cancellation and
+    duration, the package's start, the solution's open, each file-change
+    check, and how long the initial checksums took.
 
 ## Coverage
 
@@ -357,6 +362,8 @@ which builds on `p5ych08illy/bari`'s .NET 10 migration, and are released as
 | stop writing when the console output is closed | attixray/bari#3 | no crash while reporting an error after the reader went away |
 | write `target/<solution>.yaml` only when it changes | attixray/bari#3 | `bari vs` no longer touches the add-on's file |
 | version from `git describe --tags --long` | attixray/bari#4 | builds report `1.1.0.<n>` instead of `0.0.0.0` |
+| a clean goes on past entries that stay locked, retries them together, and lists every one with its holder, sorted | attixray/bari#6 (after 1.1.0) | one warning names every held file; everything else is deleted, where 1.1.0 left 11 287 files behind three held ones |
+| `selfupdate` from the latest GitHub release through `install-bari.ps1`, which keeps `<dir>.previous` and refuses an installation in use | attixray/bari#6 (after 1.1.0) | bari can be installed and updated without bootstrap; releases carry the script |
 
 Not done: generating the intermediate paths conditioned on
 `'$(DesignTimeBuild)' == 'true'`, which would protect every tool without an
@@ -387,6 +394,20 @@ Studio's own design-time MSBuild nodes ran. That is H1 with Visual Studio as
 the design-time builder, which the targets file covers only with
 `DesignTimeIsolationInVisualStudio=true`. The 1.12.6 run showed no CS2001.
 
+A third run (bari `1.1.0.6` from attixray/bari#6's branch, add-on 1.12.7)
+passed:
+
+- `install-bari.ps1` installed, reinstalled and refused an installation in use;
+- a clean with three held files left exactly those three, in all three
+  variants (full, full without `target\.vs`, `--soft-clean`), with one
+  warning naming each holder;
+- `selfupdate` reported the build as up to date;
+- Logging switched on and off without a restart.
+
+Its findings are fixed in attixray/bari#6 and add-on 1.12.8: a refused update
+deleted `.previous`, held files were retried one at a time, the list was
+unordered, and builds logged nothing.
+
 ## Residual risks
 
 - csharp-ls lists every `*.sln` under the workspace on load
@@ -399,11 +420,16 @@ the design-time builder, which the targets file covers only with
   structure.
 - If the variable is set user-wide, removing the file silently turns the
   isolation off: MSBuild skips a missing file. Keep the file at a stable path.
-- Visual Studio holds background package loads until a solution opened at
-  start-up has finished loading, about a minute for `sp-jd`. A build clicked
-  before that can run as an ordinary MSBuild build instead of through bari.
-  Only synchronous autoload would change that. In the test, the build clicked
-  during the load still went through bari.
+- **Opening `sp-jd` takes about 58 s with the projects bari 1.1.0 generates,
+  and is much faster with those of the old `C:\Bari` 1.0.3.68** (the owner
+  sees the 74 projects load about ten times faster, the slowdown growing
+  towards the end). Visual Studio holds the add-on's background load until the
+  solution has loaded, so a build clicked before that can run as an ordinary
+  MSBuild build; in the tests such a build still went through bari. The
+  add-on is not the cause: with the package already loaded, the log shows
+  58 s between `OnBeforeOpenSolution` and `OnAfterOpenSolution`, and the
+  add-on's own work after that took 0.4 s. The difference between the two
+  bari versions' generated `.sln` and project files is under investigation.
 - Only a unit test covers the fix for bari crashing on a closed console. The
   local test could not reproduce the crash with the old bari either, and the
   add-on's job-object Cancel no longer leaves bari running against a closed
@@ -464,19 +490,27 @@ the design-time builder, which the targets file covers only with
 
    The arguments stay as they are. `--project-settle 30s` is the default.
 
-4. **Install the add-on (1.12.6).** Download `BariVSPackage.vsix` from the
-   [v1.12.6 release](https://github.com/attixray/bari-vs-addon/releases/tag/v1.12.6),
+4. **Install the add-on (1.12.8).** Download `BariVSPackage.vsix` from the
+   [v1.12.8 release](https://github.com/attixray/bari-vs-addon/releases/tag/v1.12.8),
    close Visual Studio, and open the file from an elevated prompt. It installs
    for all users and replaces an all-users 1.12.2 or later. Uninstall a
    per-user copy older than 1.12.2 first; the add-on README has the details.
 
-5. **Install bari 1.1.0.** It is framework-dependent and needs the .NET 10
-   runtime (`dotnet --list-runtimes` shows `Microsoft.NETCore.App 10.*`).
-   - Download `bari-1.1.0-net10.zip` from the
-     [1.1.0 release](https://github.com/attixray/bari/releases/tag/1.1.0) and
-     check it against `SHA256SUMS`.
-   - Replace the whole `C:\Bari` directory with its contents. Keep the old
-     directory as a fallback.
+5. **Install bari from its latest release.** It is framework-dependent and
+   needs the .NET 10 runtime (`dotnet --list-runtimes` shows
+   `Microsoft.NETCore.App 10.*`). Keep a copy of the old `C:\Bari` as a
+   fallback, then install with the release's script, which checks
+   `SHA256SUMS`:
+
+   ```powershell
+   & ([scriptblock]::Create((Invoke-RestMethod https://github.com/attixray/bari/releases/latest/download/install-bari.ps1))) -InstallDir C:\Bari
+   ```
+
+   The 1.1.0 release has no script yet; for it, download
+   `bari-1.1.0-net10.zip` from the
+   [1.1.0 release](https://github.com/attixray/bari/releases/tag/1.1.0), check
+   it against `SHA256SUMS` and replace the whole directory. Later updates:
+   `C:\Bari\bari.exe selfupdate`.
    - Run `C:\Bari\bari.exe --target debug-x64 clean` once. The old and the new
      bari must not share a `cache\`.
    - Run `C:\Bari\bari.exe --target debug-x64 vs sp-jd`, so the solution's
