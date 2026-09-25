@@ -42,7 +42,8 @@ def main():
             "version": args.version, "commit": commit, "go": go_version,
             "os": args.os, "arch": args.arch, "cgo": False,
         }, indent=2) + "\n", encoding="utf-8")
-        files = [binary, root / "LICENSE", root / "README.md", metadata]
+        files = [binary, root / "LICENSE", root / "README.md", metadata,
+                 root / "contrib" / "msbuild" / "DesignTimeIsolation.targets"]
         if args.os == "windows":
             archive = output / f"{name}.zip"
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as package:

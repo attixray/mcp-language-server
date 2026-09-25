@@ -36,4 +36,6 @@ Deferred features include multi-LSP sessions, call hierarchy/implementation
 tools, asynchronous startup, and platform-specific watch descriptor budgets.
 EOF is handled once the stdio server starts; slow initialization remains subject
 to the host's startup timeout. The shutdown backstop terminates the direct LSP
-child, not arbitrary descendant processes started by third-party wrappers.
+child. On Windows, a kill-on-close job object also terminates its descendants
+when the bridge exits, however it exits; elsewhere, descendant processes
+started by third-party wrappers are not tracked.
