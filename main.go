@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
 	"github.com/isaacphi/mcp-language-server/internal/lsp"
@@ -22,9 +23,10 @@ import (
 var coreLogger = logging.NewLogger(logging.Core)
 
 type config struct {
-	workspaceDir string
-	lspCommand   string
-	lspArgs      []string
+	workspaceDir  string
+	lspCommand    string
+	lspArgs       []string
+	projectSettle time.Duration
 }
 
 type mcpServer struct {
@@ -43,6 +45,8 @@ func parseConfig() (*config, error) {
 	cfg := &config{}
 	flag.StringVar(&cfg.workspaceDir, "workspace", "", "Path to workspace directory")
 	flag.StringVar(&cfg.lspCommand, "lsp", "", "LSP command to run (args should be passed after --)")
+	flag.DurationVar(&cfg.projectSettle, "project-settle", watcher.DefaultWatcherConfig().ProjectSettleTime,
+		"How long project and solution files must stay unchanged before their changes are reported")
 	flag.Parse()
 
 	// Get remaining args after -- as LSP arguments
@@ -101,7 +105,11 @@ func (s *mcpServer) initializeLSP() error {
 	}
 	s.lspClient = client
 	s.lifecycleMu.Unlock()
-	s.workspaceWatcher = watcher.NewWorkspaceWatcher(client)
+	watcherConfig := watcher.DefaultWatcherConfig()
+	if s.config.projectSettle > 0 {
+		watcherConfig.ProjectSettleTime = s.config.projectSettle
+	}
+	s.workspaceWatcher = watcher.NewWorkspaceWatcherWithConfig(client, watcherConfig)
 
 	initResult, err := client.InitializeLSPClient(s.ctx, s.config.workspaceDir)
 	if err != nil {
