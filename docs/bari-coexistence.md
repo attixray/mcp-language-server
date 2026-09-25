@@ -105,7 +105,9 @@ files kept their build timestamps.
 
 No `*.g.i.cs` appeared in any run. The 641 `*.g.i.cs` files on the owner's
 machine therefore cannot have come from csharp-ls. They need the Visual Studio
-host (see [Questions for the owner](#questions-for-the-owner)).
+host, and the owner confirms Visual Studio was most likely open on the Suite
+at the time. Visual Studio's own design-time builds write IntelliSense files
+next to the build's; they do not run pass 1 in real-build mode.
 
 ### H2: build-triggered reload storm — confirmed
 
@@ -131,6 +133,17 @@ The bridge excludes `target/`, so the `.sln` rewrites never reached csharp-ls.
 With this branch, both sessions answered definition and references queries
 correctly right after the last build. bari regenerates the same content, so
 the loaded solution stays valid.
+
+**Project GUIDs change on every clean.** The installed `bari.exe` 1.0.3.68 was
+built on 2026-09-10 at 08:29:53, 79 s after `p5ych08illy/bari` commit
+`9386ad0`, so it is that revision. It includes `86f4724` (absolute
+`BaseIntermediateOutputPath`), which the reproduction mirrors. At that
+revision `PropertiesSection` writes `<ProjectGuid>` from
+`DefaultProjectGuidManagement`, which keeps GUIDs in `cache/<goal>/guids`.
+`clean`, and therefore `rebuild`, deletes that cache unless `--soft-clean` is
+given, so every project file comes back with a new GUID. Roslyn identifies
+projects by path, so the gate ignores `<ProjectGuid>` when comparing content.
+`bari.ps1` assigns GUIDs the same way.
 
 ### H3: handles without share-delete
 
@@ -189,7 +202,7 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
      `--project-settle`, 30 s by default.
    - Then only the net content changes are reported, in one notification. A
      file deleted and regenerated with the content csharp-ls loaded is never
-     reported.
+     reported. `<ProjectGuid>` is ignored in the comparison.
    - `*_wpftmp.*` projects and `obj/` directories are ignored. Their activity
      extends the wait.
    - Source files are forwarded as before.
@@ -202,6 +215,9 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
      `IntermediateOutputPath`.
    - For `DesignTimeBuild=true` it appends `designtime\` to the intermediate
      path. Real builds import it and change nothing.
+   - For the design-time markup compiler it swaps referenced build outputs,
+     direct and transitive, for copies under `designtime\references\`, and
+     restores the real references afterwards.
    - The project never sets this property, so an environment variable can
      supply it. By contrast, `IntermediateOutputPath` cannot be overridden
      from the environment, because the project sets it.
@@ -291,13 +307,16 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 ## Questions for the owner
 
-1. Was Visual Studio, or another IDE, open on the Suite on 2026-09-24 around
-   17:23 and 17:33? `*.g.i.cs` files need its host.
-2. Does the Suite root have a `.gitignore`? The bridge honours it, and
-   `*.csproj` in it would have hidden project events from csharp-ls.
-3. Does bari write identical project files on every build? Compare hashes
-   before and after a build (see the acceptance steps).
-4. Which bari revision is `C:\Bari\bari.exe` 1.0.3.68?
+1. Was Visual Studio open on the Suite on 2026-09-24 around 17:23 and 17:33?
+   **Most likely yes**, which accounts for the `*.g.i.cs` files.
+2. Does the Suite root have a `.gitignore` with `*.csproj`? **No**, so the
+   bridge sees every project event, as in the reproduction.
+3. Does bari write identical project files on every build? From the source:
+   yes, except `<ProjectGuid>` after a clean (see H2). The acceptance steps
+   check the rest.
+4. Which bari revision is `C:\Bari\bari.exe` 1.0.3.68? **`9386ad0`**, by its
+   build time (see H2).
+5. Open: approve the bari follow-ups below, and the add-on cancel fix?
 
 ## Installation (owner)
 
@@ -360,21 +379,29 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
    output:
 
    ```powershell
-   $before = Get-ChildItem C:\Actuals\Suite\src -Recurse -Filter *.csproj | Get-FileHash
+   # Hash each project file without <ProjectGuid>, as the bridge compares them.
+   function Get-ProjectHashes {
+     Get-ChildItem C:\Actuals\Suite\src -Recurse -Filter *.csproj | ForEach-Object {
+       $text = [IO.File]::ReadAllText($_.FullName) -replace '<ProjectGuid>[^<]*</ProjectGuid>', ''
+       $stream = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($text))
+       [pscustomobject]@{ Path = $_.FullName; Hash = (Get-FileHash -InputStream $stream).Hash }
+     }
+   }
+   $before = Get-ProjectHashes
    1..3 | ForEach-Object {
      C:\Bari\bari.exe --target debug-x64 -v clean
      C:\Bari\bari.exe --target debug-x64 -v build sp-jd
      C:\Bari\bari.exe --target debug-x64 -v rebuild sp-jd
    } *>&1 | Tee-Object "$env:TEMP\bari-acceptance.log"
    Select-String 'CS2001|BG1002|being used by another process|Failed to clean target root' "$env:TEMP\bari-acceptance.log"
-   $after = Get-ChildItem C:\Actuals\Suite\src -Recurse -Filter *.csproj | Get-FileHash
+   $after = Get-ProjectHashes
    Compare-Object $before $after -Property Path, Hash
    ```
 
    - `Select-String` should print nothing.
    - `Compare-Object` should print nothing. That confirms that bari
-     regenerates identical project files, which the bridge relies on to report
-     no change.
+     regenerates identical project files apart from `<ProjectGuid>`, which the
+     bridge relies on to report no change.
 
 4. Run `C:\Bari\bari.exe --target debug-x64 test sp-jd`. It should pass.
 5. Ask both sessions for a definition and references of a symbol used across
