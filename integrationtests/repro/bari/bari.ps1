@@ -16,10 +16,11 @@ Reproduces the layout bari generates for the QVI EVOLVE Suite:
 WPF projects use XAML that references local types, so the markup compiler
 generates <Project>_<random>_wpftmp.csproj next to the real project.
 
-Commands: generate (sources only), clean, build, rebuild.
+Commands: generate (sources only), clean, build, rebuild, and designtime,
+which runs Roslyn-style design-time builds in a loop (see Invoke-DesignTimeLoop).
 #>
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('generate', 'clean', 'build', 'rebuild')][string]$Command,
+    [Parameter(Mandatory = $true)][ValidateSet('generate', 'clean', 'build', 'rebuild', 'designtime')][string]$Command,
     [Parameter(Mandatory = $true)][string]$Workspace,
     [int]$Modules = 6,
     [int]$PagesPerModule = 10
@@ -382,11 +383,37 @@ function Invoke-Build {
     if ($LASTEXITCODE -ne 0) { Write-Host "EXIT=$LASTEXITCODE"; exit $LASTEXITCODE }
 }
 
+# Runs design-time builds the way Roslyn's MSBuildWorkspace build host does on
+# .NET (the global properties of its ProjectBuildManager, the targets it
+# builds, and csharp-ls's TargetFramework) over the WPF projects until
+# designtime.stop appears in the workspace. The environment, e.g.
+# CustomBeforeMicrosoftCommonTargets, applies as it would to a language server.
+function Invoke-DesignTimeLoop {
+    $stop = Join-Path $Workspace 'designtime.stop'
+    $properties = @(
+        '-p:DesignTimeBuild=true', '-p:NonExistentFile=__NonExistentSubDir__\__NonExistentFile__',
+        '-p:BuildProjectReferences=false', '-p:BuildingProject=false', '-p:ProvideCommandLineArgs=true',
+        '-p:SkipCompilerExecution=true', '-p:ContinueOnError=ErrorAndContinue',
+        '-p:ShouldUnsetParentConfigurationAndPlatform=false', '-p:TargetFramework=net10.0-windows')
+    $builds = 0
+    while (-not (Test-Path $stop)) {
+        foreach ($p in Get-Projects | Where-Object Kind -ne 'lib') {
+            if (Test-Path $stop) { break }
+            $file = Get-ProjectFile $p
+            if (-not (Test-Path $file)) { Start-Sleep -Milliseconds 200; continue }
+            & dotnet msbuild $file -nologo -v:q -nodeReuse:false '-t:Compile;CoreCompile;DesignTimeMarkupCompilation' @properties | Out-Null
+            $builds++
+        }
+    }
+    Write-Host "REPRO-DESIGNTIME builds=$builds"
+}
+
 switch ($Command) {
     'generate' { New-Sources }
     'clean' { Invoke-Clean }
     'build' { New-Sources; Invoke-Build }
     'rebuild' { Invoke-Clean; New-Sources; Invoke-Build }
+    'designtime' { Invoke-DesignTimeLoop }
 }
 Write-Host 'EXIT=0'
 exit 0

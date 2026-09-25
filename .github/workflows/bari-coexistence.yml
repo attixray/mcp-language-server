@@ -25,6 +25,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: design-time race
+            test: TestDesignTimeRace
+            sessions: 0
+            bridge: head
+          - name: design-time race, design-time isolation
+            test: TestDesignTimeRace
+            sessions: 0
+            bridge: head
+            session_env: 'CustomBeforeMicrosoftCommonTargets={repo}\contrib\msbuild\DesignTimeIsolation.targets'
           - name: control, no language server
             sessions: 0
             bridge: head
@@ -77,15 +86,12 @@ jobs:
           REPRO_SESSIONS: ${{ matrix.sessions }}
           REPRO_CYCLES: '3'
           REPRO_SESSION_ENV: ${{ matrix.session_env }}
-          REPRO_WORKSPACE_FILES: ${{ matrix.workspace_files }}
+          REPRO_TEST: ${{ matrix.test || 'TestBariCoexistence' }}
         run: |
           $env:BRIDGE_BIN = "$env:RUNNER_TEMP\bridge.exe"
           $env:REPRO_OUTPUT = "$env:RUNNER_TEMP\bari-repro"
-          if ($env:REPRO_WORKSPACE_FILES) {
-            $env:REPRO_WORKSPACE_FILES = ($env:REPRO_WORKSPACE_FILES -split ';' | ForEach-Object { Resolve-Path $_ }) -join ';'
-          }
           $env:REPRO_SESSION_ENV = $env:REPRO_SESSION_ENV -replace '\{repo\}', $PWD
-          go test -v -count=1 -timeout 110m -run '^TestBariCoexistence$' ./integrationtests/repro/bari/
+          go test -v -count=1 -timeout 110m -run "^$env:REPRO_TEST`$" ./integrationtests/repro/bari/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

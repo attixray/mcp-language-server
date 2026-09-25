@@ -97,8 +97,7 @@ type stepResult struct {
 	targetClean int
 	errors      []string
 	reloads     []int64
-	designTime  int
-	isolatedDT  int
+	isolated    int
 	holders     []string
 }
 
@@ -147,23 +146,45 @@ func runBari(t *testing.T, cfg reproConfig, command, logName string) stepResult 
 		}
 	}
 	result.holders = holders.FindAllString(text, -1)
-	result.designTime, result.isolatedDT = countDesignTimeOutputs(filepath.Join(cfg.workspace, "target", "tmp"))
+	result.isolated = countIsolated(filepath.Join(cfg.workspace, "target", "tmp"))
 	return result
 }
 
-// Design-time markup compilation writes *.g.i.cs; a command-line build does not.
-func countDesignTimeOutputs(root string) (shared, isolated int) {
+func isDesignTimePath(path string) bool {
+	return strings.Contains(path, string(filepath.Separator)+"designtime"+string(filepath.Separator))
+}
+
+// countIsolated counts files design-time builds wrote to their own directory.
+func countIsolated(root string) (count int) {
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() && strings.HasSuffix(entry.Name(), ".g.i.cs") {
-			if strings.Contains(path, string(filepath.Separator)+"designtime"+string(filepath.Separator)) {
-				isolated++
-			} else {
-				shared++
-			}
+		if err == nil && !entry.IsDir() && isDesignTimePath(path) {
+			count++
 		}
 		return nil
 	})
-	return shared, isolated
+	return count
+}
+
+// markupOutputsSince counts the WPF markup compiler's outputs in the build's
+// own intermediate directories written after since. Outside Visual Studio the
+// markup compiler runs in real-build mode during design-time builds too, so
+// it writes (and deletes) *.g.cs, *.baml and its state cache, not *.g.i.cs.
+func markupOutputsSince(root string, since time.Time) (count int) {
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || isDesignTimePath(path) {
+			return nil
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".g.cs") && !strings.HasSuffix(name, ".g.i.cs") &&
+			!strings.HasSuffix(name, ".baml") && !strings.HasSuffix(name, "_MarkupCompile.cache") {
+			return nil
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().After(since) {
+			count++
+		}
+		return nil
+	})
+	return count
 }
 
 // ------------------------------------------------------------------- MCP
@@ -503,11 +524,73 @@ func describe(processes []process) string {
 	return strings.Join(parts, "; ")
 }
 
-// ------------------------------------------------------------------- test
+// ------------------------------------------------------------------- report
 
-func TestBariCoexistence(t *testing.T) {
+type report struct {
+	t        *testing.T
+	cfg      reproConfig
+	summary  strings.Builder
+	failures []string
+}
+
+func newReport(t *testing.T, cfg reproConfig, title string) *report {
+	r := &report{t: t, cfg: cfg}
+	r.printf("### %s: %s\n\n", title, os.Getenv("REPRO_NAME"))
+	r.printf("sessions=%d cycles=%d modules=%d language server env=%q\n\n", cfg.sessions, cfg.cycles, cfg.modules, cfg.env)
+	return r
+}
+
+func (r *report) printf(format string, args ...any) { fmt.Fprintf(&r.summary, format, args...) }
+
+func (r *report) fail(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+func (r *report) stepHeader() {
+	r.printf("| step | exit | time | CS2001 | BG1002 | sharing violation | target clean failed | reload notices | files in designtime dirs |\n")
+	r.printf("|---|---|---|---|---|---|---|---|---|\n")
+}
+
+func (r *report) step(result stepResult) {
+	r.printf("| %s | %d | %s | %d | %d | %d | %d | %v | %d |\n", result.name, result.exitCode,
+		result.duration.Round(time.Second), result.cs2001, result.bg1002, result.sharing, result.targetClean,
+		result.reloads, result.isolated)
+	if result.failed() {
+		r.fail("%s: exit %d: %s", result.name, result.exitCode, strings.Join(result.errors, " | "))
+		r.failures = append(r.failures, result.holders...)
+	}
+}
+
+// close publishes the summary and fails the test if anything failed.
+func (r *report) close() {
+	if len(r.failures) != 0 {
+		r.printf("\nFailures:\n\n")
+		for _, failure := range r.failures {
+			r.printf("- %s\n", failure)
+		}
+	} else {
+		r.printf("\nNo failures.\n")
+	}
+	text := r.summary.String()
+	r.t.Log("\n" + text)
+	_ = os.WriteFile(filepath.Join(r.cfg.output, "summary.md"), []byte(text), 0o644)
+	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
+		if f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
+			_, _ = f.WriteString(text)
+			_ = f.Close()
+		}
+	}
+	if len(r.failures) != 0 {
+		r.t.Errorf("%d failure(s); see the summary", len(r.failures))
+	}
+}
+
+// ------------------------------------------------------------------- tests
+
+func setup(t *testing.T) reproConfig {
+	t.Helper()
 	if os.Getenv("BARI_REPRO") != "1" {
-		t.Skip("set BARI_REPRO=1 to run the bari coexistence reproduction")
+		t.Skip("set BARI_REPRO=1 to run the bari reproduction")
 	}
 	if runtime.GOOS != "windows" {
 		t.Skip("the reproduction needs Windows and the WPF build targets")
@@ -519,38 +602,22 @@ func TestBariCoexistence(t *testing.T) {
 	if err := os.MkdirAll(cfg.workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if isolation := os.Getenv("REPRO_WORKSPACE_FILES"); isolation != "" {
-		// Files copied into the workspace root, e.g. Directory.Build.props.
-		for _, file := range strings.Split(isolation, ";") {
-			data, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(cfg.workspace, filepath.Base(file)), data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	return cfg
+}
 
-	var summary strings.Builder
-	fmt.Fprintf(&summary, "### bari coexistence: %s\n\n", os.Getenv("REPRO_NAME"))
-	fmt.Fprintf(&summary, "sessions=%d cycles=%d modules=%d session env=%q workspace files=%q\n\n",
-		cfg.sessions, cfg.cycles, cfg.modules, cfg.env, os.Getenv("REPRO_WORKSPACE_FILES"))
-	defer func() {
-		t.Log("\n" + summary.String())
-		_ = os.WriteFile(filepath.Join(cfg.output, "summary.md"), []byte(summary.String()), 0o644)
-		if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
-			if f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
-				_, _ = f.WriteString(summary.String())
-				_ = f.Close()
-			}
-		}
-	}()
+// TestBariCoexistence loads csharp-ls through the bridge and cycles bari
+// clean, build and rebuild underneath it.
+func TestBariCoexistence(t *testing.T) {
+	cfg := setup(t)
+	r := newReport(t, cfg, "bari coexistence")
+	defer r.close()
+	tmp := filepath.Join(cfg.workspace, "target", "tmp")
 
 	initial := runBari(t, cfg, "build", "00-initial-build")
 	if initial.failed() {
 		t.Fatalf("initial build without language servers failed (exit %d): %v", initial.exitCode, initial.errors)
 	}
+	built := time.Now()
 
 	var sessions []*session
 	for i := 1; i <= cfg.sessions; i++ {
@@ -571,24 +638,18 @@ func TestBariCoexistence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("session %d never answered correctly: %v", s.id, err)
 		}
-		fmt.Fprintf(&summary, "session %d loaded in %s\n", s.id, took.Round(time.Second))
+		r.printf("session %d loaded in %s\n", s.id, took.Round(time.Second))
 	}
-	shared, _ := countDesignTimeOutputs(filepath.Join(cfg.workspace, "target", "tmp"))
-	fmt.Fprintf(&summary, "\n*.g.i.cs in the build's intermediate directories after the sessions loaded: %d\n\n", shared)
-	probe := filepath.Join(cfg.workspace, "target", "tmp", "Mod1", "Extensions.Mod1")
+	probe := filepath.Join(tmp, "Mod1", "Extensions.Mod1")
 	if len(sessions) != 0 {
 		time.Sleep(15 * time.Second)
-		fmt.Fprintf(&summary, "Extensions.Mod1 intermediate files after the sessions loaded:\n```\n%s\n```\n\n", listTree(probe, 80))
+		r.printf("\nWPF markup outputs in the build's intermediate directories rewritten since the initial build: %d; files in designtime dirs: %d\n\n",
+			markupOutputsSince(tmp, built), countIsolated(tmp))
+		r.printf("Extensions.Mod1 intermediate files after the sessions loaded:\n```\n%s\n```\n\n", listTree(probe, 80))
 	}
 
-	steps := []string{}
-	for c := 1; c <= cfg.cycles; c++ {
-		steps = append(steps, "clean", "build", "rebuild")
-	}
-	summary.WriteString("| step | exit | time | CS2001 | BG1002 | sharing violation | target clean failed | reload notices | *.g.i.cs shared / isolated |\n")
-	summary.WriteString("|---|---|---|---|---|---|---|---|---|\n")
-	var failures []string
-	for i, command := range steps {
+	r.stepHeader()
+	for i, command := range cycleSteps(cfg.cycles, "clean", "build", "rebuild") {
 		before := make([]int64, len(sessions))
 		for j, s := range sessions {
 			before[j] = s.reloads.Load()
@@ -597,59 +658,100 @@ func TestBariCoexistence(t *testing.T) {
 		for j, s := range sessions {
 			result.reloads = append(result.reloads, s.reloads.Load()-before[j])
 		}
-		fmt.Fprintf(&summary, "| %s | %d | %s | %d | %d | %d | %d | %v | %d / %d |\n", result.name, result.exitCode,
-			result.duration.Round(time.Second), result.cs2001, result.bg1002, result.sharing, result.targetClean,
-			result.reloads, result.designTime, result.isolatedDT)
-		if result.failed() {
-			failures = append(failures, fmt.Sprintf("%s: exit %d: %s", result.name, result.exitCode, strings.Join(result.errors, " | ")))
-			failures = append(failures, result.holders...)
-		}
+		r.step(result)
 	}
 
-	summary.WriteString("\nRecovery after the last build:\n\n")
+	r.printf("\nRecovery after the last build:\n\n")
 	for _, s := range sessions {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		took, err := s.waitCorrect(ctx, cfg.modules)
 		cancel()
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("session %d did not recover: %v", s.id, err))
-			fmt.Fprintf(&summary, "- session %d: **not recovered**: %v\n", s.id, err)
+			r.fail("session %d did not recover: %v", s.id, err)
+			r.printf("- session %d: **not recovered**: %v\n", s.id, err)
 		} else {
-			fmt.Fprintf(&summary, "- session %d: correct definition/references after %s\n", s.id, took.Round(time.Second))
+			r.printf("- session %d: correct definition/references after %s\n", s.id, took.Round(time.Second))
 		}
+	}
+	if len(sessions) == 0 {
+		return
+	}
+	r.printf("\nExtensions.Mod1 intermediate files at the end:\n```\n%s\n```\n", listTree(probe, 80))
+	r.printf("\nSession 1 server messages:\n```\n%s\n```\n", serverMessages(filepath.Join(cfg.output, "session-1.log"), 150))
+	r.printf("\nLifecycle:\n\n")
+	processes := listProcesses(t)
+	for i, s := range sessions {
+		tree := descendants(processes, s.cmd.Process.Pid)
+		how := "stdin closed (client exited)"
+		if i%2 == 1 {
+			how = "bridge killed (TerminateProcess)"
+			_ = s.cmd.Process.Kill()
+		} else {
+			_ = s.stdin.Close()
+		}
+		left := survivors(t, tree, 20*time.Second)
+		if len(left) != 0 {
+			r.fail("session %d, %s: descendants survived: %s", s.id, how, describe(left))
+			r.printf("- session %d, %s: **%d of %d descendants survived**: %s\n", s.id, how, len(left), len(tree), describe(left))
+		} else {
+			r.printf("- session %d, %s: all %d descendants exited: %s\n", s.id, how, len(tree), describe(tree))
+		}
+	}
+}
+
+// TestDesignTimeRace runs design-time builds the way Roslyn's build host does,
+// back to back, while bari builds: the collision without a language server's
+// reload timing in the way. REPRO_SESSION_ENV applies to the design-time builds.
+func TestDesignTimeRace(t *testing.T) {
+	cfg := setup(t)
+	r := newReport(t, cfg, "design-time race")
+	defer r.close()
+	tmp := filepath.Join(cfg.workspace, "target", "tmp")
+
+	initial := runBari(t, cfg, "build", "00-initial-build")
+	if initial.failed() {
+		t.Fatalf("initial build failed (exit %d): %v", initial.exitCode, initial.errors)
+	}
+	built := time.Now()
+	script, err := filepath.Abs("bari.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := exec.Command("pwsh", "-NoProfile", "-NonInteractive", "-File", script,
+		"-Command", "designtime", "-Workspace", cfg.workspace, "-Modules", strconv.Itoa(cfg.modules))
+	loop.Env = append(append(os.Environ(), "MSBUILDDISABLENODEREUSE=1"), cfg.env...)
+	var loopOutput bytes.Buffer
+	loop.Stdout, loop.Stderr = &loopOutput, &loopOutput
+	if err := loop.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loop.Process.Kill() }()
+	time.Sleep(30 * time.Second)
+	r.printf("WPF markup outputs in the build's intermediate directories rewritten by design-time builds alone: %d; files in designtime dirs: %d\n\n",
+		markupOutputsSince(tmp, built), countIsolated(tmp))
+
+	r.stepHeader()
+	for i, command := range cycleSteps(cfg.cycles, "build", "rebuild") {
+		r.step(runBari(t, cfg, command, fmt.Sprintf("%02d-%s", i+1, command)))
 	}
 
-	if len(sessions) != 0 {
-		fmt.Fprintf(&summary, "\nExtensions.Mod1 intermediate files at the end:\n```\n%s\n```\n", listTree(probe, 80))
-		fmt.Fprintf(&summary, "\nSession 1 server messages:\n```\n%s\n```\n", serverMessages(filepath.Join(cfg.output, "session-1.log"), 150))
-		summary.WriteString("\nLifecycle:\n\n")
-		processes := listProcesses(t)
-		for i, s := range sessions {
-			tree := descendants(processes, s.cmd.Process.Pid)
-			how := "stdin closed (client exited)"
-			if i%2 == 1 {
-				how = "bridge killed (TerminateProcess)"
-				_ = s.cmd.Process.Kill()
-			} else {
-				_ = s.stdin.Close()
-			}
-			left := survivors(t, tree, 20*time.Second)
-			if len(left) != 0 {
-				failures = append(failures, fmt.Sprintf("session %d, %s: descendants survived: %s", s.id, how, describe(left)))
-				fmt.Fprintf(&summary, "- session %d, %s: **%d of %d descendants survived**: %s\n", s.id, how, len(left), len(tree), describe(left))
-			} else {
-				fmt.Fprintf(&summary, "- session %d, %s: all %d descendants exited\n", s.id, how, len(tree))
-			}
-		}
+	if err := os.WriteFile(filepath.Join(cfg.workspace, "designtime.stop"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
+	done := make(chan error, 1)
+	go func() { done <- loop.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Minute):
+		t.Fatal("design-time loop did not stop")
+	}
+	r.printf("\n%s\n", strings.TrimSpace(loopOutput.String()))
+}
 
-	if len(failures) != 0 {
-		summary.WriteString("\nFailures:\n\n")
-		for _, failure := range failures {
-			fmt.Fprintf(&summary, "- %s\n", failure)
-		}
-		t.Errorf("%d failure(s); see the summary", len(failures))
-	} else {
-		summary.WriteString("\nNo failures.\n")
+func cycleSteps(cycles int, commands ...string) []string {
+	var steps []string
+	for range cycles {
+		steps = append(steps, commands...)
 	}
+	return steps
 }
