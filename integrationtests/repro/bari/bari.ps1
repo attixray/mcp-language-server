@@ -188,6 +188,22 @@ public partial class MainWindow : Window
 
 # ---------------------------------------------------------------- projects
 
+# Like bari's DefaultProjectGuidManagement: GUIDs live in cache\guids, which a
+# clean deletes, so every clean gives every project a new ProjectGuid.
+function Get-ProjectGuid($p) {
+    $file = Join-Path $Workspace 'cache\guids'
+    $guids = @{}
+    if (Test-Path $file) {
+        foreach ($line in Get-Content $file) { $name, $value = $line -split '=', 2; $guids[$name] = $value }
+    }
+    if (-not $guids.ContainsKey($p.Name)) {
+        $guids[$p.Name] = [guid]::NewGuid().ToString('B')
+        New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
+        Set-Content $file ($guids.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
+    }
+    return $guids[$p.Name]
+}
+
 function New-ProjectXml($p) {
     $dir = Get-ProjectDir $p
     $root = Join-Path $Workspace ''
@@ -209,6 +225,7 @@ function New-ProjectXml($p) {
     }
     $wpf = if ($p.Kind -eq 'lib') { 'false' } else { 'true' }
     $outputType = if ($p.Kind -eq 'app') { 'WinExe' } else { 'Library' }
+    $projectGuid = Get-ProjectGuid $p
     return @"
 <Project TreatAsLocalProperty="SelfContained">
   <PropertyGroup>
@@ -216,6 +233,7 @@ function New-ProjectXml($p) {
   </PropertyGroup>
   <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
   <PropertyGroup>
+    <ProjectGuid>$projectGuid</ProjectGuid>
     <OutputPath>$rel\target\$($p.Module)</OutputPath>
     <IntermediateOutputPath>$rel\target\tmp\$($p.Module)\$($p.Name)</IntermediateOutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -355,6 +373,7 @@ function Invoke-Clean {
             Show-Holders $left
         }
     }
+    Remove-Item (Join-Path $Workspace 'cache') -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($p in Get-Projects) {
         $file = Get-ProjectFile $p
         if (-not (Test-Path $file)) { continue }

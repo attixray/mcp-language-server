@@ -43,6 +43,25 @@ func TestProjectGateDropsIdenticalRegeneration(t *testing.T) {
 	}
 }
 
+func TestProjectGateIgnoresNewProjectGUID(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "App.csproj")
+	writeFile(t, project, "<Project><PropertyGroup><ProjectGuid>{11111111-1111-1111-1111-111111111111}</ProjectGuid></PropertyGroup></Project>")
+	gate := newProjectGate(time.Second)
+	gate.record(project)
+	now := time.Now()
+
+	writeFile(t, project, "<Project><PropertyGroup><ProjectGuid>{22222222-2222-2222-2222-222222222222}</ProjectGuid></PropertyGroup></Project>")
+	gate.hold(project, now)
+	if changes := gate.due(now.Add(time.Second)); len(changes) != 0 {
+		t.Fatalf("new GUID reported: %v", changes)
+	}
+	writeFile(t, project, "<Project><PropertyGroup><ProjectGuid>{22222222-2222-2222-2222-222222222222}</ProjectGuid><Nullable>enable</Nullable></PropertyGroup></Project>")
+	gate.hold(project, now)
+	if changes := gate.due(now.Add(time.Second)); len(changes) != 1 || changes[0].kind != protocol.Changed {
+		t.Fatalf("got %v, want one change", changes)
+	}
+}
+
 func TestProjectGateReportsNetChangesOnce(t *testing.T) {
 	dir := t.TempDir()
 	changed, deleted, created := filepath.Join(dir, "a.csproj"), filepath.Join(dir, "b.csproj"), filepath.Join(dir, "c.sln")

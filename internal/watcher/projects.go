@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -105,6 +106,11 @@ func (g *projectGate) due(now time.Time) []fileChange {
 	return changes
 }
 
+// projectGUID matches the ProjectGuid property. bari assigns new GUIDs after
+// every clean, and the language server identifies projects by path, so a new
+// GUID alone is not a change.
+var projectGUID = regexp.MustCompile(`<ProjectGuid>[^<]*</ProjectGuid>`)
+
 func contentDigest(file string) (sum [sha256.Size]byte, exists bool, err error) {
 	data, err := readSharingDelete(file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -113,5 +119,5 @@ func contentDigest(file string) (sum [sha256.Size]byte, exists bool, err error) 
 	if err != nil {
 		return sum, false, err
 	}
-	return sha256.Sum256(data), true, nil
+	return sha256.Sum256(projectGUID.ReplaceAll(data, nil)), true, nil
 }
