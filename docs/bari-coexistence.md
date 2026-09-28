@@ -275,7 +275,7 @@ references with `PEStreamOptions.PrefetchEntireImage`, then closes the file.
 
 At the start of this work the installed add-on was 1.12.2
 (`attixray/bari-vs-addon` at `d42404b`); `zvrana/bari-vs-addon` holds only the
-2014 code. The owner now runs 1.12.6.
+2014 code. The owner now runs 1.12.9.
 
 - **Solution and selection commands.** The add-on intercepts Build, Rebuild
   and Clean Solution, Build and Rebuild Selection, Start Without Debugging,
@@ -316,6 +316,8 @@ At the start of this work the installed add-on was 1.12.2
   - the log records each bari command with its exit code or cancellation and
     duration, the package's start, the solution's open, each file-change
     check, and how long the initial checksums took.
+- **Add-on 1.12.9**, merged by attixray/bari-vs-addon#5 and #6: the yaml
+  checksum is skipped when the yaml cannot be read at start.
 
 ## Coverage
 
@@ -347,11 +349,12 @@ At the start of this work the installed add-on was 1.12.2
   `Microsoft.Common.CurrentVersion.targets`, too late for properties derived
   during evaluation (`TargetRefPath`, the assembly attributes file).
 
-## bari changes (attixray/bari 1.1.0)
+## bari changes (attixray/bari 1.1.0 and 1.1.1)
 
 The owner approved the bari follow-ups. They are in the fork `attixray/bari`,
 which builds on `p5ych08illy/bari`'s .NET 10 migration, and are released as
-[1.1.0](https://github.com/attixray/bari/releases/tag/1.1.0):
+[1.1.0](https://github.com/attixray/bari/releases/tag/1.1.0) and
+[1.1.1](https://github.com/attixray/bari/releases/tag/1.1.1):
 
 | change | PR | effect |
 |---|---|---|
@@ -362,8 +365,8 @@ which builds on `p5ych08illy/bari`'s .NET 10 migration, and are released as
 | stop writing when the console output is closed | attixray/bari#3 | no crash while reporting an error after the reader went away |
 | write `target/<solution>.yaml` only when it changes | attixray/bari#3 | `bari vs` no longer touches the add-on's file |
 | version from `git describe --tags --long` | attixray/bari#4 | builds report `1.1.0.<n>` instead of `0.0.0.0` |
-| a clean goes on past entries that stay locked, retries them together, and lists every one with its holder, sorted | attixray/bari#6 (after 1.1.0) | one warning names every held file; everything else is deleted, where 1.1.0 left 11 287 files behind three held ones |
-| `selfupdate` from the latest GitHub release through `install-bari.ps1`, which keeps `<dir>.previous` and refuses an installation in use | attixray/bari#6 (after 1.1.0) | bari can be installed and updated without bootstrap; releases carry the script |
+| a clean goes on past entries that stay locked, retries them together, and lists every one with its holder, sorted | attixray/bari#6 (1.1.1) | one warning names every held file; everything else is deleted, where 1.1.0 left 11 287 files behind three held ones |
+| `selfupdate` from the latest GitHub release through `install-bari.ps1`, which keeps `<dir>.previous` and refuses an installation in use | attixray/bari#6 (1.1.1) | bari can be installed and updated without bootstrap; releases carry the script |
 
 Not done: generating the intermediate paths conditioned on
 `'$(DesignTimeBuild)' == 'true'`, which would protect every tool without an
@@ -407,6 +410,29 @@ passed:
 Its findings are fixed in attixray/bari#6 and add-on 1.12.8: a refused update
 deleted `.previous`, held files were retried one at a time, the list was
 unordered, and builds logged nothing.
+
+### Release 1.1.1 and rollout (2026-09-28)
+
+- **Release.** [1.1.1](https://github.com/attixray/bari/releases/tag/1.1.1) is
+  tagged on `6202131`, the merge of attixray/bari#6. It carries
+  `bari-1.1.1-net10.zip`, `install-bari.ps1` and `SHA256SUMS`. The CI step
+  that tests `install-bari.ps1` against the latest release passed.
+- **`selfupdate`, end to end,** on the test install `C:\Bari-net10`:
+  - 1.1.0.6 updated to 1.1.1.0 and kept `.previous`;
+  - run again, it reported 1.1.1 as up to date;
+  - with another bari (`rebuild sp-jd`) running from the old install, the
+    update changed nothing and left no `.new` or `.replacing` directory;
+  - once that bari was stopped, the update went through.
+- **Rollout.**
+  - `install-bari.ps1` replaced production `C:\Bari` 1.0.3.68 with 1.1.1 and
+    kept `C:\Bari.previous`.
+  - After one `clean` and `build sp-jd`, `target\sp-jd.yaml` names
+    `C:\Bari\bari.exe`.
+  - With add-on 1.12.9, Build Solution in Visual Studio ran
+    `C:\Bari\bari.exe --target debug-x64 build sp-jd` as a child of devenv
+    and completed.
+  - An automation call to `SolutionBuild.Build()` bypasses the add-on and runs
+    a plain MSBuild build. Test the add-on through the Build command instead.
 
 ### Slow solution open: HgSccPackage, not bari
 
@@ -522,8 +548,8 @@ HgSccPackage frames. Once the indexing finished, every reopen was fast again.
 
    The arguments stay as they are. `--project-settle 30s` is the default.
 
-4. **Install the add-on (1.12.8).** Download `BariVSPackage.vsix` from the
-   [v1.12.8 release](https://github.com/attixray/bari-vs-addon/releases/tag/v1.12.8),
+4. **Install the add-on (1.12.9).** Download `BariVSPackage.vsix` from the
+   [v1.12.9 release](https://github.com/attixray/bari-vs-addon/releases/tag/v1.12.9),
    close Visual Studio, and open the file from an elevated prompt. It installs
    for all users and replaces an all-users 1.12.2 or later. Uninstall a
    per-user copy older than 1.12.2 first; the add-on README has the details.
@@ -538,15 +564,14 @@ HgSccPackage frames. Once the indexing finished, every reopen was fast again.
    & ([scriptblock]::Create((Invoke-RestMethod https://github.com/attixray/bari/releases/latest/download/install-bari.ps1))) -InstallDir C:\Bari
    ```
 
-   The 1.1.0 release has no script yet; for it, download
-   `bari-1.1.0-net10.zip` from the
-   [1.1.0 release](https://github.com/attixray/bari/releases/tag/1.1.0), check
-   it against `SHA256SUMS` and replace the whole directory. Later updates:
-   `C:\Bari\bari.exe selfupdate`.
+   Later updates: `C:\Bari\bari.exe selfupdate`.
    - Run `C:\Bari\bari.exe --target debug-x64 clean` once. The old and the new
      bari must not share a `cache\`.
-   - Run `C:\Bari\bari.exe --target debug-x64 vs sp-jd`, so the solution's
-     `.yaml` names the new `bari-path`.
+   - Run `C:\Bari\bari.exe --target debug-x64 build sp-jd`. It rewrites
+     `target\sp-jd.sln` and its `.yaml`, which then names the new `bari-path`.
+
+   Done on 2026-09-28 with 1.1.1; see
+   [Release 1.1.1 and rollout](#release-111-and-rollout-2026-09-28).
 
 6. **Optional, while running the acceptance steps:** add
    `LOG_LEVEL = 'INFO'` and
