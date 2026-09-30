@@ -171,6 +171,133 @@ This is an [MCP](https://modelcontextprotocol.io/introduction) server that runs 
   </div>
 </details>
 
+### Install with a coding agent
+
+Paste one of these prompts into a coding agent (Claude Code, Codex or similar)
+started in the repository you want to navigate. The agent installs the
+language server and the newest release of this fork, registers the bridge
+with itself for that repository, and documents it in the repository's
+`HACKING.md`. It does not commit.
+
+<details>
+  <summary>C/C++ (clangd)</summary>
+
+```text
+Set up semantic C/C++ code navigation for this repository through an MCP
+server, then document it. Ask me before anything that needs admin rights.
+
+1. clangd: if `clangd --version` works, use that clangd. Otherwise install
+   it with the system package manager (apt install clangd, brew install llvm,
+   winget install LLVM.LLVM) or from the newest zip at
+   https://github.com/clangd/clangd/releases. Note the binary's full path.
+
+2. compile_commands.json: find it (repository root, build/, out/,
+   cmake-build-*). If there is none, ask me before creating it: for CMake,
+   configure a build directory with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON; for
+   other build systems, ask me which tool to use (for example bear).
+
+3. The bridge: find the newest release of attixray/mcp-language-server,
+   prereleases included (`gh release list -R attixray/mcp-language-server
+   --limit 1`, or https://api.github.com/repos/attixray/mcp-language-server/releases?per_page=1;
+   /releases/latest skips prereleases). From it download SHA256SUMS and
+   mcp-language-server_<tag>_<os>_<arch>.zip on Windows or .tar.gz elsewhere
+   (os: windows, linux or darwin; arch: amd64 or arm64). Stop if the
+   archive's SHA-256 does not match its line in SHA256SUMS. Unpack it into
+   ~/.local/share/mcp-language-server/<tag>/ (on Windows
+   %USERPROFILE%\.local\share\mcp-language-server\<tag>\). Go is not needed.
+
+4. Register the bridge with the MCP client you are running in, for this
+   repository only, under the name cpp-lsp:
+   - command: the unpacked mcp-language-server binary, absolute path;
+   - args: --workspace <repository root> --lsp <clangd path> --
+     --compile-commands-dir=<directory of compile_commands.json>
+   Claude Code: claude mcp add --scope project cpp-lsp -- <command> <args>.
+   Codex: a [mcp_servers.cpp-lsp] table in .codex/config.toml.
+
+5. Add or update a section "Code navigation (cpp-lsp)" in HACKING.md at the
+   repository root. Keep the rest of the file; create it if it is missing.
+   The section says:
+   - what was installed, the versions, the paths, and where it is registered;
+   - to prefer these tools to text search: definition, references,
+     references_at (file, 1-based line and column), hover, diagnostics,
+     rename_symbol, edit_file;
+   - that answers are only as good as compile_commands.json, and when to
+     regenerate it (new files, changed build options);
+   - how to update: repeat step 3 with the newer tag and change the
+     registered path; update clangd the way it was installed.
+
+6. If the cpp-lsp tools are available in this session, call definition on a
+   symbol of this repository and diagnostics on one source file, and show
+   me the results. Otherwise tell me to restart the client and what to try.
+   Do not commit; list the files you changed.
+```
+
+</details>
+<details>
+  <summary>C# (csharp-ls)</summary>
+
+```text
+Set up semantic C# code navigation for this repository through an MCP
+server, then document it. Ask me before anything that needs admin rights.
+
+1. .NET SDK: `dotnet --list-sdks` must list one. If it does not, stop and
+   tell me.
+
+2. csharp-ls: run `dotnet tool update --global csharp-ls`, which installs or
+   updates it. It goes to ~/.dotnet/tools (on Windows
+   %USERPROFILE%\.dotnet\tools). Note the binary's full path.
+
+3. Solution: csharp-ls loads the solution it finds in the workspace. If the
+   repository has several .sln or .slnx files, or a build tool generates the
+   solution, ask me which directory to use as the workspace.
+
+4. The bridge: find the newest release of attixray/mcp-language-server,
+   prereleases included (`gh release list -R attixray/mcp-language-server
+   --limit 1`, or https://api.github.com/repos/attixray/mcp-language-server/releases?per_page=1;
+   /releases/latest skips prereleases). From it download SHA256SUMS and
+   mcp-language-server_<tag>_<os>_<arch>.zip on Windows or .tar.gz elsewhere
+   (os: windows, linux or darwin; arch: amd64 or arm64). Stop if the
+   archive's SHA-256 does not match its line in SHA256SUMS. Unpack it into
+   ~/.local/share/mcp-language-server/<tag>/ (on Windows
+   %USERPROFILE%\.local\share\mcp-language-server\<tag>\). Go is not needed.
+   Copy DesignTimeIsolation.targets from the archive to
+   ~/.local/share/mcp-language-server/DesignTimeIsolation.targets, a path
+   that stays the same across versions.
+
+5. Register the bridge with the MCP client you are running in, for this
+   repository only, under the name csharp-lsp:
+   - command: the unpacked mcp-language-server binary, absolute path;
+   - args: --workspace <workspace> --lsp <csharp-ls path>
+   - env: CustomBeforeMicrosoftCommonTargets=<absolute path of the copied
+     DesignTimeIsolation.targets>. It keeps csharp-ls's design-time builds
+     from replacing files that a build running at the same time uses; it
+     changes nothing else.
+   Claude Code: claude mcp add --scope project csharp-lsp
+   -e CustomBeforeMicrosoftCommonTargets=<path> -- <command> <args>.
+   Codex: [mcp_servers.csharp-lsp] and [mcp_servers.csharp-lsp.env] tables in
+   .codex/config.toml.
+
+6. Add or update a section "Code navigation (csharp-lsp)" in HACKING.md at
+   the repository root. Keep the rest of the file; create it if it is
+   missing. The section says:
+   - what was installed, the versions, the paths, and where it is registered;
+   - to prefer these tools to text search: definition, references,
+     references_at (file, 1-based line and column), hover, diagnostics,
+     rename_symbol, edit_file;
+   - that the first answers wait until csharp-ls has loaded the solution,
+     and that after project or solution files change, csharp-ls reloads them
+     only once they have been unchanged for 30 seconds (--project-settle);
+   - how to update: `dotnet tool update --global csharp-ls`, and for the
+     bridge repeat step 4 with the newer tag and change the registered path.
+
+7. If the csharp-lsp tools are available in this session, call definition on
+   a type of this repository and diagnostics on one .cs file, and show me
+   the results. Otherwise tell me to restart the client and what to try.
+   Do not commit; list the files you changed.
+```
+
+</details>
+
 ## .NET projects built by other tools
 
 Project and solution files (`.csproj`, `.sln`, `.slnx`, `.props`, `.targets`
