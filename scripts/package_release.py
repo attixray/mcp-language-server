@@ -29,11 +29,13 @@ def main():
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     go_version = subprocess.check_output(["go", "version"], cwd=root, text=True).strip()
     name = f"mcp-language-server_{args.version}_{args.os}_{args.arch}"
+    reported_version = args.version[1:] if args.version.startswith("v") else args.version
+    linker_flags = f"-s -w -X github.com/isaacphi/mcp-language-server/internal/version.Version={reported_version}"
     with tempfile.TemporaryDirectory(prefix="bridge-release-") as temporary:
         staging = Path(temporary)
         binary = staging / ("mcp-language-server.exe" if args.os == "windows" else "mcp-language-server")
         subprocess.run(
-            ["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w", "-o", str(binary), "."],
+            ["go", "build", "-trimpath", "-buildvcs=false", f"-ldflags={linker_flags}", "-o", str(binary), "."],
             cwd=root, env=env, check=True,
         )
         binary.chmod(0o755)

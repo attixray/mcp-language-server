@@ -15,6 +15,7 @@ import (
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
 	"github.com/isaacphi/mcp-language-server/internal/lsp"
+	"github.com/isaacphi/mcp-language-server/internal/version"
 	"github.com/isaacphi/mcp-language-server/internal/watcher"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -179,7 +180,7 @@ func (s *mcpServer) prepare() error {
 
 	s.mcpServer = server.NewMCPServer(
 		"MCP Language Server",
-		"v0.0.2",
+		version.Version,
 		server.WithRecovery(),
 		server.WithToolHandlerMiddleware(s.supervisedTool),
 	)

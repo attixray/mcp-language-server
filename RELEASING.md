@@ -11,12 +11,19 @@ source commit and compiler version, and DesignTimeIsolation.targets (see
 workflow verifies checksums, uploads to a draft release, and publishes only
 after all uploads succeed. Tags containing a hyphen produce prereleases.
 
-Use fork-specific tags, for example `v0.1.1-attixray.1`, to distinguish these
-builds from upstream releases. From the intended, clean release commit:
+Use `v<major>.<minor>.<patch>` for a stable release, such as `v1.0.0`.
+Hyphenated tags such as `v1.0.1-rc.1` or the older `v0.1.1-attixray.3`
+convention are prereleases.
+
+First update the default `Version` in `internal/version/version.go` (without
+the leading `v`) and commit it. MCP server information and LSP client information
+use this same version. Release packaging also sets it from the tag at link time,
+so the executable and `BUILD-INFO.json` identify the same release.
+From the intended, clean release commit, for example:
 
 ```sh
-git tag -a v0.1.1-attixray.1 -m "First attixray prerelease"
-git push origin v0.1.1-attixray.1
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
 ```
 
 Create a new tag for each release; do not move published tags. If an upload

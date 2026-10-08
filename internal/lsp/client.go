@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/protocol"
+	"github.com/isaacphi/mcp-language-server/internal/version"
 )
 
 type Client struct {
@@ -172,7 +173,7 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 			ProcessID: int32(os.Getpid()),
 			ClientInfo: &protocol.ClientInfo{
 				Name:    "mcp-language-server",
-				Version: "0.1.0",
+				Version: version.Version,
 			},
 			RootPath: workspaceDir,
 			RootURI:  protocol.URIFromPath(workspaceDir),
