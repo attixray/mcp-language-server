@@ -109,6 +109,36 @@ the broker is killed. Linux/macOS use process groups for controlled termination;
 SIGKILL of the broker itself bypasses its cleanup, so use normal termination
 signals on those platforms.
 
+## Broker failure propagation
+
+Adapters track the IDs of received MCP requests, including requests waiting for
+broker startup. If startup fails or a broker connection closes, each outstanding
+accepted request receives a JSON-RPC error with code `-32001` on stdout. Its
+`error.data` contains `reason`, `outcome_unknown`, `request_replayed` (always
+false) and `broker_log`. Requests whose forwarding started have an uncertain
+outcome: a mutation may have completed before the connection broke. The message
+instructs the caller to restart the adapter and verify file state before retrying
+mutations. Requests never forwarded are identified as not sent.
+
+Complete broker responses are forwarded before EOF is handled; already completed
+IDs do not receive a second response. Numeric IDs use exact correlation, and
+the broker restores original raw IDs in successful and error responses despite
+the MCP library's numeric decoding. Invalid/truncated broker frames are not
+copied into the MCP output. Notifications and client responses are not treated
+as pending requests. Tracking and startup buffering have bounded capacities.
+
+On broker failure an adapter also emits a plain stderr diagnosis, even if normal
+logging is filtered or redirected, and exits nonzero. An idle adapter has no
+request ID to answer, so it reports through stderr and transport closure only.
+The MCP client's presentation of these errors is client-dependent. No adapter
+reconnect or request replay happens automatically. A newly started adapter can
+acquire the released owner lock and launch a replacement broker.
+
+Reporting has a two-second total grace period; an unread stdout pipe is closed
+to release a blocked write. Delivery cannot be guaranteed when the client is
+not reading its output. Normal client stdin EOF or parent shutdown remains a
+successful disconnect and does not kill the shared broker.
+
 ## Use
 
 Existing stdio configurations work after replacing the binary. Put supervision
@@ -127,7 +157,9 @@ directory, not a network filesystem or directory shared with other users.
 
 Real subprocess tests cover simultaneous agent startup, independent request-ID
 spaces, active request cancellation/disconnect, stale descriptor authentication,
-failed-startup retry, delayed/stuck applyEdit handlers, a silent LSP, document restore, restart limits,
+failed-startup retry, broker-kill propagation to active/idle adapters, startup
+JSON-RPC errors, truncated broker frames, unread native stdout pipes,
+delayed/stuck applyEdit handlers, a silent LSP, document restore, restart limits,
 mutation non-replay, bounded startup, worktree/configuration identity and kernel
 lock release after owner death. Transport tests cover blocked pipe writes,
 waiting writers, canceled in-progress frames, pending-call release on EOF and

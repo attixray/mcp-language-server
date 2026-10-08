@@ -211,7 +211,14 @@ func main() {
 	}
 	if cfg.shared || cfg.brokerChild {
 		if err := runShared(cfg); err != nil {
-			coreLogger.Error("Shared LSP: %v", err)
+			var failure *adapterFailure
+			if errors.As(err, &failure) {
+				// A transport failure must remain visible even with logging disabled
+				// or redirected. stdout is reserved for framed MCP messages.
+				_, _ = fmt.Fprintln(os.Stderr, "MCP adapter:", failure)
+			} else {
+				coreLogger.Error("Shared LSP: %v", err)
+			}
 			os.Exit(1)
 		}
 		return

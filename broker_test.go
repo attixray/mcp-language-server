@@ -160,7 +160,10 @@ func (c *adapterTestClient) exchange(id int, method string, params any) (map[str
 	return response, nil
 }
 func (c *adapterTestClient) initialize() error {
-	_, err := c.exchange(1, "initialize", map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "test-agent", "version": "1"}})
+	response, err := c.exchange(1, "initialize", map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "test-agent", "version": "1"}})
+	if err == nil && response["error"] != nil {
+		err = fmt.Errorf("MCP initialization failed: %v", response["error"])
+	}
 	return err
 }
 func (c *adapterTestClient) close(t *testing.T) {

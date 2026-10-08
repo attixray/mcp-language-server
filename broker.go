@@ -133,27 +133,7 @@ func runShared(c *config) error {
 		case <-ctx.Done():
 		}
 	}()
-	conn, err := connectBroker(ctx, c, dir, key)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	// The adapter owns no LSP and no owner lock. EOF disconnects only this client.
-	copied := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(conn, os.Stdin)
-		if tcp, ok := conn.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
-		copied <- err
-	}()
-	go func() { _, err := io.Copy(os.Stdout, conn); copied <- err }()
-	select {
-	case err := <-copied:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return runAdapter(ctx, c, dir, key, os.Stdin, os.Stdout)
 }
 
 func readEndpoint(path, key string) (*brokerEndpoint, error) {
@@ -385,6 +365,16 @@ func serveBrokerConnection(parent context.Context, conn net.Conn, s *mcpServer, 
 		go func(raw json.RawMessage, requestID string, requestCtx context.Context, stop context.CancelFunc) {
 			defer func() { stop(); requestsMu.Lock(); delete(requests, requestID); requestsMu.Unlock(); <-slots }()
 			if response := s.mcpServer.HandleMessage(requestCtx, raw); response != nil {
+				// mcp-go decodes IDs through float64. Restore the known original
+				// JSON so large integer IDs cannot be rounded onto another request.
+				switch typed := response.(type) {
+				case mcp.JSONRPCResponse:
+					typed.ID = json.RawMessage(requestID)
+					response = typed
+				case mcp.JSONRPCError:
+					typed.ID = json.RawMessage(requestID)
+					response = typed
+				}
 				if write(response) != nil {
 					cancel()
 					_ = conn.Close()
