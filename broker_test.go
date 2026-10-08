@@ -196,7 +196,12 @@ func await(t *testing.T, timeout time.Duration, predicate func() bool, message s
 func buildBrokerBinary(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "mcp-language-server.exe")
-	cmd := exec.Command("go", "build", "-o", binary, ".")
+	args := []string{"build"}
+	if raceEnabled {
+		args = append(args, "-race")
+	}
+	args = append(args, "-o", binary, ".")
+	cmd := exec.Command("go", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build broker: %v\n%s", err, output)
 	}
@@ -204,6 +209,13 @@ func buildBrokerBinary(t *testing.T) string {
 }
 func cleanupTestBroker(t *testing.T, state string) {
 	t.Helper()
+	logs, _ := filepath.Glob(filepath.Join(state, "*.log"))
+	for _, path := range logs {
+		data, _ := os.ReadFile(path)
+		if bytes.Contains(data, []byte("WARNING: DATA RACE")) {
+			t.Errorf("broker race detector: %s", data)
+		}
+	}
 	entries, _ := filepath.Glob(filepath.Join(state, "*.json"))
 	for _, path := range entries {
 		data, _ := os.ReadFile(path)

@@ -154,7 +154,6 @@ func (s *mcpServer) ensureLSP(ctx context.Context) error {
 		}
 	}
 	if client != nil && s.supervisor.retired != client {
-		s.supervisor.retired = client
 		s.dumpDiagnostic("transport stopped; restarting", client)
 		pathSet := map[string]bool{}
 		for _, path := range append(s.supervisor.paths, client.OpenPaths()...) {
@@ -176,6 +175,7 @@ func (s *mcpServer) ensureLSP(ctx context.Context) error {
 				return ctx.Err()
 			}
 		}
+		s.supervisor.retired = client
 	}
 	now := time.Now()
 	s.supervisor.historyMu.Lock()
