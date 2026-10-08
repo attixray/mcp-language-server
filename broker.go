@@ -133,7 +133,11 @@ func runShared(c *config) error {
 		case <-ctx.Done():
 		}
 	}()
-	return runAdapter(ctx, c, dir, key, os.Stdin, os.Stdout)
+	output, err := newAdapterOutput()
+	if err != nil {
+		return &adapterFailure{"output_failed", err, filepath.Join(dir, key+".log")}
+	}
+	return runAdapter(ctx, c, dir, key, os.Stdin, output)
 }
 
 func readEndpoint(path, key string) (*brokerEndpoint, error) {

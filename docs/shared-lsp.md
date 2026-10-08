@@ -135,7 +135,9 @@ reconnect or request replay happens automatically. A newly started adapter can
 acquire the released owner lock and launch a replacement broker.
 
 Reporting has a two-second total grace period; an unread stdout pipe is closed
-to release a blocked write. Delivery cannot be guaranteed when the client is
+to release a blocked write. On Unix, the adapter uses a nonblocking, runtime-
+pollable stdout duplicate so closing it actually interrupts a full pipe write;
+stdout must support interruptible pipe I/O. Delivery cannot be guaranteed when the client is
 not reading its output. Normal client stdin EOF or parent shutdown remains a
 successful disconnect and does not kill the shared broker.
 
