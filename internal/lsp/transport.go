@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
@@ -44,10 +45,43 @@ func WriteMessage(w io.Writer, msg *Message) error {
 	return nil
 }
 
-func (c *Client) writeMessage(msg *Message) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return WriteMessage(c.stdin, msg)
+// acquire is cancellable even when another writer is blocked in the OS pipe.
+func acquire(ctx context.Context, once *sync.Once, gate *chan struct{}, done <-chan struct{}) error {
+	once.Do(func() { *gate = make(chan struct{}, 1) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case *gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return fmt.Errorf("LSP transport closed")
+	}
+}
+func release(gate chan struct{}) { <-gate }
+
+func (c *Client) writeMessage(ctx context.Context, msg *Message) error {
+	if err := acquire(ctx, &c.writeOnce, &c.writeGate, c.done); err != nil {
+		return err
+	}
+	defer release(c.writeGate)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A partial frame cannot be retried on this stream. Close the transport and
+	// kill only this LSP tree to release a blocked OS write when the deadline fires.
+	stop := context.AfterFunc(ctx, c.Abort)
+	defer stop()
+	err := WriteMessage(c.stdin, msg)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		c.Abort()
+	}
+	return err
 }
 
 // ReadMessage reads a single LSP message from the given reader
@@ -159,7 +193,7 @@ func (c *Client) handleMessages() {
 			}
 
 			// Send response back to server
-			if err := c.writeMessage(response); err != nil {
+			if err := c.writeServerResponse(response); err != nil {
 				lspLogger.Error("Error sending response to server: %v", err)
 			}
 
@@ -193,7 +227,11 @@ func (c *Client) handleMessages() {
 
 			if ok {
 				lspLogger.Debug("Sending response for ID %v to handler", msg.ID)
-				ch <- msg
+				select {
+				case ch <- msg:
+				default:
+					lspLogger.Warn("Duplicate response for ID %s", idStr)
+				}
 			} else {
 				lspLogger.Debug("No handler for response ID: %v", msg.ID)
 			}
@@ -203,6 +241,17 @@ func (c *Client) handleMessages() {
 
 // Call makes a request and waits for the response
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
+	var cancel context.CancelFunc
+	if method == "initialize" {
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			ctx, cancel = context.WithCancel(ctx)
+		} else {
+			ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
+		}
+	} else {
+		ctx, cancel = c.bounded(ctx)
+	}
+	defer cancel()
 	// Only read requests may be retried when the server invalidates an in-flight
 	// analysis. Never automatically repeat edits or command execution.
 	readOnly := false
@@ -265,18 +314,23 @@ func (c *Client) callOnce(ctx context.Context, method string, params any, result
 		c.handlersMu.Unlock()
 	}()
 
+	c.track(idStr, method, "write")
+	defer c.untrack(idStr)
+
 	// Send request
-	if err := c.writeMessage(msg); err != nil {
+	if err := c.writeMessage(ctx, msg); err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
 	lspLogger.Debug("Waiting for response to request ID: %v", msg.ID)
 
+	c.track(idStr, method, "response")
 	// Wait for the response, cancellation, or transport shutdown.
 	var resp *Message
 	select {
 	case resp = <-ch:
 	case <-ctx.Done():
+		c.Abort()
 		return fmt.Errorf("request %s canceled: %w", method, ctx.Err())
 	case <-c.done:
 		return fmt.Errorf("LSP connection closed while waiting for %s", method)
@@ -307,6 +361,8 @@ func (c *Client) callOnce(ctx context.Context, method string, params any, result
 
 // Notify sends a notification (a request without an ID that doesn't expect a response)
 func (c *Client) Notify(ctx context.Context, method string, params any) error {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	lspLogger.Debug("Sending notification: method=%s", method)
 
 	msg, err := NewNotification(method, params)
@@ -320,7 +376,10 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	default:
 	}
 
-	if err := c.writeMessage(msg); err != nil {
+	id := fmt.Sprintf("notify-%d", c.nextID.Add(1))
+	c.track(id, method, "write")
+	defer c.untrack(id)
+	if err := c.writeMessage(ctx, msg); err != nil {
 		return fmt.Errorf("failed to send notification: %w", err)
 	}
 

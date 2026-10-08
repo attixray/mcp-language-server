@@ -315,12 +315,21 @@ variable in the language server's environment, so its design-time builds do not
 replace files a concurrent command-line build is using. See
 [docs/bari-coexistence.md](docs/bari-coexistence.md).
 
-On Windows the language server and its child processes exit with the bridge,
-even when the bridge is killed. The bridge also exits when the process that
-started it does.
+On Windows the language server and its child processes exit with their owning
+broker, even when it is killed. Each stdio adapter exits with its parent; the
+shared broker remains available to other adapters until its idle timeout.
+`--shared=false` retains the dedicated bridge/child lifetime.
+
+## Shared LSP and recovery
+
+Adapters now share one supervised LSP per workspace/configuration by default.
+See [shared LSP and recovery](docs/shared-lsp.md) for ownership locks, deadlines,
+diagnostics, restart limits and configuration. Existing stdio MCP configurations
+continue to work after updating the executable.
 
 ## Tools
 
+- `lsp_status`: Reports shared LSP health, active/queued requests and restart budget.
 - `definition`: Retrieves the complete source code definition of any symbol (function, type, constant, etc.) from your codebase.
 - `references`: Locates all usages and references of a symbol throughout the codebase.
 - `references_at`: Finds references using `filePath`, `line` and `column` instead of searching the workspace by name. Line and column are 1-based; column counts UTF-16 code units. Use `LSP_CONTEXT_LINES=0` to skip enclosing-symbol lookups and return only reference lines. Existing `references` calls remain supported.

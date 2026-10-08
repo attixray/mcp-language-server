@@ -38,6 +38,24 @@ jobs:
             -name "*.go" -print | xargs gopls check
           go tool govulncheck ./...
 
+  broker-platforms:
+    name: Shared broker (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.1'
+      - name: Test OS locks, multi-process sharing, timeout and recovery
+        run: go test -timeout 120s . ./internal/lsp
+
   integration:
     name: ${{ matrix.language }} integration
     runs-on: ubuntu-24.04

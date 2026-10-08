@@ -17,15 +17,25 @@ import (
 )
 
 type Client struct {
-	Cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Reader
-	stderr    io.ReadCloser
-	writeMu   sync.Mutex
-	done      chan struct{}
-	doneOnce  sync.Once
-	closeOnce sync.Once
-	closeErr  error
+	Cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         *bufio.Reader
+	stderr         io.ReadCloser
+	writeGate      chan struct{}
+	writeOnce      sync.Once
+	fileGate       chan struct{}
+	fileOnce       sync.Once
+	abortOnce      sync.Once
+	stdoutPipe     io.ReadCloser
+	processTree    *processTree
+	requestTimeout atomic.Int64
+	activityMu     sync.Mutex
+	activity       map[string]Activity
+	failure        atomic.Pointer[failureSnapshot]
+	done           chan struct{}
+	doneOnce       sync.Once
+	closeOnce      sync.Once
+	closeErr       error
 
 	// Request ID counter
 	nextID atomic.Int32
@@ -55,11 +65,16 @@ type Client struct {
 	// Files are currently opened by the LSP
 	openFiles   map[string]*OpenFileInfo
 	openFilesMu sync.RWMutex
-	fileSyncMu  sync.Mutex
 }
 
 func NewClient(command string, args ...string) (*Client, error) {
+	return NewClientInWorkspace("", 60*time.Second, command, args...)
+}
+
+func NewClientInWorkspace(workspace string, timeout time.Duration, command string, args ...string) (*Client, error) {
 	cmd := exec.Command(command, args...)
+	cmd.Dir = workspace
+	configureProcess(cmd)
 	// Copy env
 	cmd.Env = os.Environ()
 
@@ -82,6 +97,7 @@ func NewClient(command string, args ...string) (*Client, error) {
 		Cmd:                   cmd,
 		stdin:                 stdin,
 		stdout:                bufio.NewReader(stdout),
+		stdoutPipe:            stdout,
 		stderr:                stderr,
 		handlers:              make(map[string]chan *Message),
 		notificationHandlers:  make(map[string]NotificationHandler),
@@ -92,10 +108,20 @@ func NewClient(command string, args ...string) (*Client, error) {
 		done:                  make(chan struct{}),
 	}
 
+	client.SetRequestTimeout(timeout)
+
 	// Start the LSP server process
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start LSP server: %w", err)
 	}
+
+	tree, err := attachProcessTree(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("cannot contain LSP process tree: %w", err)
+	}
+	client.processTree = tree
 
 	// Handle stderr in a separate goroutine with proper logging
 	go drainStderr(stderr)
@@ -269,17 +295,8 @@ func drainStderr(stderr io.Reader) {
 
 func (c *Client) close() error {
 	// Start the backstop BEFORE any pipe write or file-sync lock acquisition.
-	// Closing stdin deliberately does not acquire writeMu: it unblocks writers.
-	killTimer := time.AfterFunc(2*time.Second, func() {
-		if err := c.stdin.Close(); err != nil {
-			lspLogger.Debug("Closing LSP stdin: %v", err)
-		}
-		if c.Cmd.Process != nil {
-			if err := c.Cmd.Process.Kill(); err != nil {
-				lspLogger.Debug("Terminating LSP process: %v", err)
-			}
-		}
-	})
+	// Closing stdin deliberately does not acquire the write gate: it unblocks writers.
+	killTimer := time.AfterFunc(2*time.Second, c.Abort)
 	defer killTimer.Stop()
 	// Try to close all open files first
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -301,7 +318,12 @@ func (c *Client) close() error {
 	}
 
 	// Wait for process to exit
-	return c.Cmd.Wait()
+	err := c.Cmd.Wait()
+	if c.processTree != nil {
+		c.processTree.close()
+	}
+	c.doneOnce.Do(func() { close(c.done) })
+	return err
 }
 
 type ServerState int
@@ -314,8 +336,16 @@ const (
 
 func (c *Client) WaitForServerReady(ctx context.Context) error {
 	// TODO: wait for specific messages or poll workspace/symbol
-	time.Sleep(time.Second * 1)
-	return nil
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return fmt.Errorf("LSP closed during startup")
+	case <-timer.C:
+		return nil
+	}
 }
 
 type OpenFileInfo struct {
@@ -336,8 +366,12 @@ func (c *Client) ensureFileOpen(ctx context.Context, filePath string) (int32, bo
 // Serialize document lifecycle operations without holding a state lock during
 // pipe writes: the receive loop must remain able to handle diagnostics.
 func (c *Client) syncFile(ctx context.Context, filePath string, requireOpen bool) (int32, bool, error) {
-	c.fileSyncMu.Lock()
-	defer c.fileSyncMu.Unlock()
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
+	if err := acquire(ctx, &c.fileOnce, &c.fileGate, c.done); err != nil {
+		return 0, false, err
+	}
+	defer release(c.fileGate)
 	uri := protocol.URIFromPath(filePath)
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -393,8 +427,12 @@ func (c *Client) NotifyChange(ctx context.Context, filePath string) error {
 }
 
 func (c *Client) CloseFile(ctx context.Context, filePath string) error {
-	c.fileSyncMu.Lock()
-	defer c.fileSyncMu.Unlock()
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
+	if err := acquire(ctx, &c.fileOnce, &c.fileGate, c.done); err != nil {
+		return err
+	}
+	defer release(c.fileGate)
 	uri := protocol.URIFromPath(filePath)
 	c.openFilesMu.Lock()
 	previous := c.openFiles[string(uri)]
