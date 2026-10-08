@@ -10,6 +10,7 @@ import (
 )
 
 func (s *mcpServer) registerTools() error {
+	s.registerStatusTool()
 	coreLogger.Debug("Registering MCP tools")
 
 	applyTextEditTool := mcp.NewTool("edit_file",

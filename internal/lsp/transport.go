@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/isaacphi/mcp-language-server/internal/logging"
@@ -44,10 +45,50 @@ func WriteMessage(w io.Writer, msg *Message) error {
 	return nil
 }
 
-func (c *Client) writeMessage(msg *Message) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return WriteMessage(c.stdin, msg)
+// acquire is cancellable even when another writer is blocked in the OS pipe.
+func acquire(ctx context.Context, once *sync.Once, gate *chan struct{}, done <-chan struct{}) error {
+	once.Do(func() { *gate = make(chan struct{}, 1) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case *gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return fmt.Errorf("LSP transport closed")
+	}
+}
+func release(gate chan struct{}) { <-gate }
+
+func (c *Client) writeMessage(ctx context.Context, msg *Message) error {
+	if err := acquire(ctx, &c.writeOnce, &c.writeGate, c.done); err != nil {
+		return err
+	}
+	defer release(c.writeGate)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Once a frame starts, finish it despite caller cancellation. Preserve its
+	// deadline so a blocked pipe still gets killed without corrupting a shared
+	// stream just because one MCP session disconnected.
+	writeCtx, cancelWrite := c.bounded(context.WithoutCancel(ctx))
+	if deadline, ok := ctx.Deadline(); ok {
+		cancelWrite()
+		writeCtx, cancelWrite = context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	}
+	defer cancelWrite()
+	stop := context.AfterFunc(writeCtx, c.Abort)
+	defer stop()
+	err := WriteMessage(c.stdin, msg)
+	if err != nil {
+		c.Abort()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 // ReadMessage reads a single LSP message from the given reader
@@ -104,8 +145,18 @@ func ReadMessage(r *bufio.Reader) (*Message, error) {
 
 // handleMessages reads and dispatches messages in a loop
 func (c *Client) handleMessages() {
-	defer c.doneOnce.Do(func() { close(c.done) })
+	defer func() {
+		c.doneOnce.Do(func() { close(c.done) })
+		if c.messagesDone != nil {
+			close(c.messagesDone)
+		}
+	}()
 	for {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		msg, err := ReadMessage(c.stdout)
 		if err != nil {
 			// Check if this is due to normal shutdown (EOF when closing connection)
@@ -117,6 +168,13 @@ func (c *Client) handleMessages() {
 			return
 		}
 
+		// Abort can race a buffered message. Do not dispatch another callback
+		// after retirement has started; any callback already running is joined.
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		// Handle server->client request (has both Method and ID)
 		if msg.Method != "" && msg.ID != nil && msg.ID.Value != nil {
 			response := &Message{
@@ -159,7 +217,7 @@ func (c *Client) handleMessages() {
 			}
 
 			// Send response back to server
-			if err := c.writeMessage(response); err != nil {
+			if err := c.writeServerResponse(response); err != nil {
 				lspLogger.Error("Error sending response to server: %v", err)
 			}
 
@@ -193,7 +251,11 @@ func (c *Client) handleMessages() {
 
 			if ok {
 				lspLogger.Debug("Sending response for ID %v to handler", msg.ID)
-				ch <- msg
+				select {
+				case ch <- msg:
+				default:
+					lspLogger.Warn("Duplicate response for ID %s", idStr)
+				}
 			} else {
 				lspLogger.Debug("No handler for response ID: %v", msg.ID)
 			}
@@ -203,6 +265,17 @@ func (c *Client) handleMessages() {
 
 // Call makes a request and waits for the response
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
+	var cancel context.CancelFunc
+	if method == "initialize" {
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			ctx, cancel = context.WithCancel(ctx)
+		} else {
+			ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
+		}
+	} else {
+		ctx, cancel = c.bounded(ctx)
+	}
+	defer cancel()
 	// Only read requests may be retried when the server invalidates an in-flight
 	// analysis. Never automatically repeat edits or command execution.
 	readOnly := false
@@ -265,18 +338,33 @@ func (c *Client) callOnce(ctx context.Context, method string, params any, result
 		c.handlersMu.Unlock()
 	}()
 
+	c.track(idStr, method, "write")
+	defer c.untrack(idStr)
+
 	// Send request
-	if err := c.writeMessage(msg); err != nil {
+	if err := c.writeMessage(ctx, msg); err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
 	lspLogger.Debug("Waiting for response to request ID: %v", msg.ID)
 
+	c.track(idStr, method, "response")
 	// Wait for the response, cancellation, or transport shutdown.
 	var resp *Message
 	select {
 	case resp = <-ch:
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.Abort()
+		} else {
+			// Cancellation abandons only this response. Ask the LSP to stop the
+			// request using a short independent budget; late replies are ignored.
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			if err := c.Notify(cancelCtx, "$/cancelRequest", map[string]any{"id": id}); err != nil {
+				lspLogger.Debug("LSP request cancellation: %v", err)
+			}
+		}
 		return fmt.Errorf("request %s canceled: %w", method, ctx.Err())
 	case <-c.done:
 		return fmt.Errorf("LSP connection closed while waiting for %s", method)
@@ -307,6 +395,8 @@ func (c *Client) callOnce(ctx context.Context, method string, params any, result
 
 // Notify sends a notification (a request without an ID that doesn't expect a response)
 func (c *Client) Notify(ctx context.Context, method string, params any) error {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	lspLogger.Debug("Sending notification: method=%s", method)
 
 	msg, err := NewNotification(method, params)
@@ -320,7 +410,10 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	default:
 	}
 
-	if err := c.writeMessage(msg); err != nil {
+	id := fmt.Sprintf("notify-%d", c.nextID.Add(1))
+	c.track(id, method, "write")
+	defer c.untrack(id)
+	if err := c.writeMessage(ctx, msg); err != nil {
 		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
