@@ -33,6 +33,7 @@ type Client struct {
 	activity       map[string]Activity
 	failure        atomic.Pointer[failureSnapshot]
 	done           chan struct{}
+	messagesDone   chan struct{}
 	doneOnce       sync.Once
 	closeOnce      sync.Once
 	closeErr       error
@@ -106,6 +107,7 @@ func NewClientInWorkspace(workspace string, timeout time.Duration, command strin
 		diagnosticsChanged:    make(chan struct{}),
 		openFiles:             make(map[string]*OpenFileInfo),
 		done:                  make(chan struct{}),
+		messagesDone:          make(chan struct{}),
 	}
 
 	client.SetRequestTimeout(timeout)

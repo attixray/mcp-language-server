@@ -3,7 +3,9 @@ package lsp
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -85,5 +87,69 @@ func TestResponseDeadlineAbortsUnresponsiveLSP(t *testing.T) {
 	case <-c.Done():
 	default:
 		t.Fatal("silent transport remained healthy")
+	}
+}
+
+func TestCancellationDuringFrameWritePreservesTransport(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close(); _ = writer.Close() }()
+	c := &Client{stdin: writer, done: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	completed := make(chan error, 1)
+	go func() { completed <- c.Notify(ctx, "test/first", map[string]string{"value": "content"}) }()
+	// Consume the header, then cancel while the body write is blocked. The
+	// writer must complete the frame when the peer resumes reading.
+	buffered := bufio.NewReader(reader)
+	header, err := buffered.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int
+	if _, err = fmt.Sscanf(header, "Content-Length: %d", &size); err != nil {
+		t.Fatal(err)
+	}
+	if blank, err := buffered.ReadString('\n'); err != nil || blank != "\r\n" {
+		t.Fatalf("header: %q %v", blank, err)
+	}
+	cancel()
+	select {
+	case <-c.Done():
+		t.Fatal("session cancellation aborted in-progress frame")
+	case <-time.After(50 * time.Millisecond):
+	}
+	body := make([]byte, size)
+	if _, err = io.ReadFull(buffered, body); err != nil {
+		t.Fatal(err)
+	}
+	var message Message
+	if err = json.Unmarshal(body, &message); err != nil || message.Method != "test/first" {
+		t.Fatalf("partial frame after cancellation: %s %v", body, err)
+	}
+	select {
+	case err = <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("writer did not finish frame")
+	}
+	go func() { completed <- c.Notify(context.Background(), "test/second", nil) }()
+	next, err := ReadMessage(buffered)
+	if err != nil || next.Method != "test/second" {
+		t.Fatalf("shared stream unusable after cancellation: %v %v", next, err)
+	}
+	select {
+	case err = <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second writer stuck")
+	}
+	select {
+	case <-c.Done():
+		t.Fatal("healthy shared transport closed")
+	default:
 	}
 }

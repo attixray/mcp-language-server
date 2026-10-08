@@ -17,7 +17,9 @@ The broker uses a lifetime kernel lock (`LockFileEx` on Windows, `flock` on
 Linux/macOS). A stale descriptor or heartbeat never authorizes takeover; only
 acquiring the OS lock does. The `.lock` file remains after shutdown and must
 not be deleted while processes run. A simultaneous-start loser never launches
-an LSP.
+an LSP. Follower processes verify a live owner's authenticated readiness;
+a readable stale descriptor does not end the lock wait. An adapter retries an
+exited startup child at most three times within the combined startup budget.
 
 Connections use a random 256-bit token in a per-user descriptor and listen only
 on `127.0.0.1`. Loopback TCP provides the same implementation on all three target
@@ -30,8 +32,11 @@ Different worktrees or effective configurations cannot share document state.
 
 Tool operations are serialized, including document synchronization and workspace
 edits. Disconnecting one adapter cancels its requests without killing other
-clients' LSP. The broker stops after the last connection has been gone for the
-idle timeout. Shared brokers are independent of the first adapter's parent;
+clients' LSP. Active response waits send `$/cancelRequest`, ignore late replies,
+and preserve the shared process. A started frame finishes under its original
+deadline even if its session disconnects; an actually blocked write can still
+abort that generation. The broker stops after the last connection has been gone
+for the idle timeout. Shared brokers are independent of the first adapter's parent;
 adapters themselves still monitor their parent and stdin EOF.
 
 External editors/build tools do not participate in this queue. Rename validates
@@ -59,8 +64,10 @@ write closes that generation's stream and process tree, instead of abandoning
 a goroutine that could later emit a partial frame. EOF releases pending calls.
 
 On a tool deadline the supervisor allows up to two additional seconds for the
-worker to stop. A worker still stuck beyond that grace period quarantines the
-broker; it will return errors rather than risk a mutation overlapping another
+worker to stop. Before generation replacement it also joins the receive loop,
+including server-side `workspace/applyEdit` callbacks, with a two-second grace
+period. A worker or server callback still stuck beyond that grace period
+quarantines the broker; it will return errors rather than risk a mutation overlapping another
 generation. `lsp_status` remains usable and reports this condition.
 
 `lsp_status` reports broker/LSP PIDs, generation, active/queued tools,
@@ -80,7 +87,8 @@ contain document contents when explicitly enabled.
 An independent watchdog can close the transport without acquiring the tool,
 file-sync or writer gates. It detects outstanding tool deadlines and a closed
 LSP transport. Before replacing a generation it cancels the old watcher,
-terminates/reaps the old LSP and waits for the tool worker and watcher to stop.
+terminates/reaps the old LSP and waits for the tool worker, server callbacks
+and watcher to stop.
 
 Restart attempts use exponential backoff (1, 2, 4 seconds, capped at 16) and a
 rolling limit. Each attempt consumes the budget even if initialization fails.
@@ -118,8 +126,10 @@ directory, not a network filesystem or directory shared with other users.
 ## Verification
 
 Real subprocess tests cover simultaneous agent startup, independent request-ID
-spaces, single-agent disconnect, a silent LSP, document restore, restart limits,
+spaces, active request cancellation/disconnect, stale descriptor authentication,
+failed-startup retry, delayed/stuck applyEdit handlers, a silent LSP, document restore, restart limits,
 mutation non-replay, bounded startup, worktree/configuration identity and kernel
 lock release after owner death. Transport tests cover blocked pipe writes,
-waiting writers, pending-call release on EOF and response deadlines. CI runs
+waiting writers, canceled in-progress frames, pending-call release on EOF and
+response deadlines. CI runs
 Linux race checks and native Windows/macOS broker tests.

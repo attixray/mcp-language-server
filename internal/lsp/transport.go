@@ -70,16 +70,23 @@ func (c *Client) writeMessage(ctx context.Context, msg *Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// A partial frame cannot be retried on this stream. Close the transport and
-	// kill only this LSP tree to release a blocked OS write when the deadline fires.
-	stop := context.AfterFunc(ctx, c.Abort)
+	// Once a frame starts, finish it despite caller cancellation. Preserve its
+	// deadline so a blocked pipe still gets killed without corrupting a shared
+	// stream just because one MCP session disconnected.
+	writeCtx, cancelWrite := c.bounded(context.WithoutCancel(ctx))
+	if deadline, ok := ctx.Deadline(); ok {
+		cancelWrite()
+		writeCtx, cancelWrite = context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	}
+	defer cancelWrite()
+	stop := context.AfterFunc(writeCtx, c.Abort)
 	defer stop()
 	err := WriteMessage(c.stdin, msg)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
 	if err != nil {
 		c.Abort()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 	}
 	return err
 }
@@ -138,8 +145,18 @@ func ReadMessage(r *bufio.Reader) (*Message, error) {
 
 // handleMessages reads and dispatches messages in a loop
 func (c *Client) handleMessages() {
-	defer c.doneOnce.Do(func() { close(c.done) })
+	defer func() {
+		c.doneOnce.Do(func() { close(c.done) })
+		if c.messagesDone != nil {
+			close(c.messagesDone)
+		}
+	}()
 	for {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		msg, err := ReadMessage(c.stdout)
 		if err != nil {
 			// Check if this is due to normal shutdown (EOF when closing connection)
@@ -151,6 +168,13 @@ func (c *Client) handleMessages() {
 			return
 		}
 
+		// Abort can race a buffered message. Do not dispatch another callback
+		// after retirement has started; any callback already running is joined.
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		// Handle server->client request (has both Method and ID)
 		if msg.Method != "" && msg.ID != nil && msg.ID.Value != nil {
 			response := &Message{
@@ -330,7 +354,17 @@ func (c *Client) callOnce(ctx context.Context, method string, params any, result
 	select {
 	case resp = <-ch:
 	case <-ctx.Done():
-		c.Abort()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.Abort()
+		} else {
+			// Cancellation abandons only this response. Ask the LSP to stop the
+			// request using a short independent budget; late replies are ignored.
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			if err := c.Notify(cancelCtx, "$/cancelRequest", map[string]any{"id": id}); err != nil {
+				lspLogger.Debug("LSP request cancellation: %v", err)
+			}
+		}
 		return fmt.Errorf("request %s canceled: %w", method, ctx.Err())
 	case <-c.done:
 		return fmt.Errorf("LSP connection closed while waiting for %s", method)

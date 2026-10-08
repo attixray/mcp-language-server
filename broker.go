@@ -198,9 +198,17 @@ func connectBroker(parent context.Context, c *config, dir, key string) (net.Conn
 	ctx, cancel := context.WithTimeout(parent, c.lockTimeout+c.initTimeout)
 	defer cancel()
 	descriptor := filepath.Join(dir, key+".json")
-	spawned := false
+	var spawned <-chan struct{}
+	attempts := 0
 	started := time.Now()
 	for {
+		if spawned != nil {
+			select {
+			case <-spawned:
+				spawned = nil
+			default:
+			}
+		}
 		if endpoint, err := readEndpoint(descriptor, key); err == nil {
 			if conn, err := dialEndpoint(ctx, endpoint); err == nil {
 				return conn, nil
@@ -211,10 +219,11 @@ func connectBroker(parent context.Context, c *config, dir, key string) (net.Conn
 			return nil, err
 		}
 		if owner != nil {
-			if !spawned {
+			if spawned == nil && attempts < 3 {
 				// Kernel ownership, never PID age or a stale heartbeat, permits takeover.
-				err = spawnBroker(c, dir, key)
-				spawned = err == nil
+				// A child may exit before publishing readiness. Allow bounded retries.
+				spawned, err = spawnBroker(c, dir, key)
+				attempts++
 			}
 			_ = owner.Close()
 			if err != nil {
@@ -230,26 +239,27 @@ func connectBroker(parent context.Context, c *config, dir, key string) (net.Conn
 		}
 	}
 }
-func spawnBroker(c *config, dir, key string) error {
+func spawnBroker(c *config, dir, key string) (<-chan struct{}, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	args := []string{"--broker-child", "--workspace", c.workspaceDir, "--lsp", c.lspCommand, "--broker-dir", dir, "--request-timeout", c.requestTimeout.String(), "--init-timeout", c.initTimeout.String(), "--lock-timeout", c.lockTimeout.String(), "--idle-timeout", c.idleTimeout.String(), "--restart-limit", fmt.Sprint(c.restartLimit), "--restart-window", c.restartWindow.String(), "--project-settle", c.projectSettle.String(), "--"}
 	args = append(args, c.lspArgs...)
 	logFile, err := os.OpenFile(filepath.Join(dir, key+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = logFile.Close() }()
 	cmd := exec.Command(executable, args...)
 	configureBrokerProcess(cmd)
 	cmd.Stderr = logFile
 	if err = cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	return done, nil
 }
 
 type brokerSession struct {
@@ -401,8 +411,14 @@ func runBroker(c *config, dir, key string) error {
 			break
 		}
 		// Another broker won the startup race. Never spawn an LSP as a follower.
-		if _, err = readEndpoint(filepath.Join(dir, key+".json"), key); err == nil {
-			return nil
+		if endpoint, err := readEndpoint(filepath.Join(dir, key+".json"), key); err == nil {
+			probeCtx, cancelProbe := context.WithTimeout(lockCtx, 250*time.Millisecond)
+			conn, err := dialEndpoint(probeCtx, endpoint)
+			cancelProbe()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
 		}
 		select {
 		case <-lockCtx.Done():

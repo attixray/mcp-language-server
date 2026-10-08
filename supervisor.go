@@ -126,15 +126,19 @@ func (s *mcpServer) supervisedTool(next server.ToolHandlerFunc) server.ToolHandl
 			}
 			return result.result, result.err
 		case <-ctx.Done():
-			client.Abort()
-			s.dumpDiagnostic("tool deadline or cancellation", client)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				client.Abort()
+				s.dumpDiagnostic("tool deadline", client)
+			}
 			// Never replace the shared client while a mutating worker could still run.
 			select {
 			case <-completed:
 			case <-time.After(2 * time.Second):
 				s.supervisor.poisoned.Store(true)
+				client.Abort()
+				s.dumpDiagnostic("canceled tool worker did not stop", client)
 			}
-			return mcp.NewToolResultError("LSP operation interrupted; its transport was closed. Mutations are never automatically replayed; check file state before retrying."), nil
+			return mcp.NewToolResultError("LSP operation interrupted. Mutations are never automatically replayed; check file state before retrying."), nil
 		case <-s.ctx.Done():
 			client.Abort()
 			return mcp.NewToolResultError("LSP broker shutting down"), nil
@@ -145,6 +149,9 @@ func (s *mcpServer) supervisedTool(next server.ToolHandlerFunc) server.ToolHandl
 // Called only while holding the tool gate. The old watcher is canceled and
 // the old process tree is reaped before the new client can become visible.
 func (s *mcpServer) ensureLSP(ctx context.Context) error {
+	if s.supervisor.poisoned.Load() {
+		return fmt.Errorf("LSP worker did not stop; broker requires restart")
+	}
 	client := s.currentClient()
 	if client != nil {
 		select {
@@ -168,6 +175,17 @@ func (s *mcpServer) ensureLSP(ctx context.Context) error {
 		}
 		client.Abort()
 		_ = client.Close()
+		// Killing the child releases transport calls, but an applyEdit handler
+		// can still be inside filesystem I/O. Join it before exposing a new
+		// generation. A stuck callback quarantines the broker just like a tool.
+		joinCtx, cancelJoin := context.WithTimeout(s.ctx, 2*time.Second)
+		err := client.WaitForHandlers(joinCtx)
+		cancelJoin()
+		if err != nil {
+			s.supervisor.poisoned.Store(true)
+			s.dumpDiagnostic("server request handler did not stop", client)
+			return fmt.Errorf("LSP server request handler did not stop; broker requires restart: %w", err)
+		}
 		if s.watcherDone != nil {
 			select {
 			case <-s.watcherDone:

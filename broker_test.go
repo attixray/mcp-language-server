@@ -33,6 +33,10 @@ func TestBrokerFakeLSP(t *testing.T) {
 	}
 	_, _ = fmt.Fprintln(file, os.Getpid())
 	_ = file.Close()
+	if _, err = os.Stat(filepath.Join(root, "fail-init-once")); err == nil {
+		_ = os.Remove(filepath.Join(root, "fail-init-once"))
+		os.Exit(2)
+	}
 	if _, err = os.Stat(filepath.Join(root, "stall-init")); err == nil {
 		for {
 			time.Sleep(time.Second)
@@ -62,6 +66,9 @@ func TestBrokerFakeLSP(t *testing.T) {
 			}
 			documents[params.TextDocument.URI] = text
 		}
+		if msg.Method == "$/cancelRequest" {
+			_ = os.WriteFile(filepath.Join(root, "cancel-seen"), msg.Params, 0600)
+		}
 		if msg.ID == nil {
 			continue
 		}
@@ -69,6 +76,11 @@ func TestBrokerFakeLSP(t *testing.T) {
 		switch msg.Method {
 		case "initialize":
 			result = json.RawMessage(`{"capabilities":{}}`)
+		case "test/triggerApplyEdit":
+			payload, _ := os.ReadFile(filepath.Join(root, "trigger-apply-edit"))
+			request, _ := lsp.NewRequest(991, "workspace/applyEdit", json.RawMessage(payload))
+			_ = lsp.WriteMessage(os.Stdout, request)
+			continue
 		case "textDocument/rename":
 			count, err := os.OpenFile(filepath.Join(root, "renames"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 			if err == nil {

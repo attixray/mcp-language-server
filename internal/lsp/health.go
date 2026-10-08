@@ -55,6 +55,20 @@ func (c *Client) Activities() []Activity {
 	return result
 }
 func (c *Client) Done() <-chan struct{} { return c.done }
+
+// WaitForHandlers joins the receive loop, including synchronous server requests
+// such as workspace/applyEdit. Done alone only signals transport shutdown.
+func (c *Client) WaitForHandlers(ctx context.Context) error {
+	if c.messagesDone == nil {
+		return nil // No receive loop (synthetic clients used by transport tests).
+	}
+	select {
+	case <-c.messagesDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 func (c *Client) OpenPaths() []string {
 	c.openFilesMu.RLock()
 	defer c.openFilesMu.RUnlock()
