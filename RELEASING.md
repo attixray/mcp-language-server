@@ -1,20 +1,22 @@
 # Fork releases
 
 Pushing a new `v*` tag runs the **Release binaries** workflow. It tests core
-navigation on Windows, Linux and macOS, then builds six standalone binaries:
-Windows/Linux/macOS (`darwin`), each for `amd64` and `arm64`. Windows downloads
-are ZIP files; Linux and macOS downloads are tar.gz files. A per-user Windows
-x64 `.exe` installer is also built from the verified Windows x64 ZIP, using
+navigation on Windows, Linux and macOS, then builds a Windows x64 (`amd64`)
+ZIP archive. A per-user Windows x64 `.exe` installer is also built from the
+verified ZIP, using
 the pinned Inno Setup compiler. It requires no Go runtime or administrator rights.
 
 Each archive contains the binary, license, README, BUILD-INFO.json with the
 source commit and compiler version, and DesignTimeIsolation.targets (see
-[docs/bari-coexistence.md](docs/bari-coexistence.md)). SHA256SUMS covers all six archives
-and the x64 installer. The installer job tests clean installation, locked upgrade
+[docs/bari-coexistence.md](docs/bari-coexistence.md)). SHA256SUMS covers the ZIP
+and the installer. These are the only two release packages. The installer job tests clean installation, locked upgrade
 and uninstall rejection, directory/settings preservation, upgrade, repair,
 MCP version reporting, uninstall and migration from an extracted ZIP. The
 workflow verifies checksums, uploads to a draft release, and publishes only
 after all uploads succeed. Tags containing a hyphen produce prereleases.
+The release description combines generated change notes with installation and
+upgrade guidance rendered from `packaging/windows/release-notes.md` and the
+ZIP's actual build metadata, so download links and source information match the tag.
 
 Use `v<major>.<minor>.<patch>` for a stable release, such as `v1.0.0`.
 Hyphenated tags such as `v1.0.1-rc.1` or the older `v0.1.1-attixray.3`
@@ -44,7 +46,7 @@ including filesystem watchers and stdio protocol tests on all three platforms.
 No extra secrets are needed: only the publish job gets `contents: write`.
 The Go compiler version is pinned in the workflow. Update it deliberately.
 The downloaded binary does not require Go; install the desired LSP server
-(for example csharp-ls) separately. macOS binaries are unsigned/not notarized.
+(for example csharp-ls) separately.
 
 To build one package locally with Go, Git and Python 3 available:
 

@@ -1,6 +1,6 @@
 # MCP Language Server
 
-Fork binaries for Windows, Linux and macOS are available from
+Fork release packages for Windows x64 are available from
 [attixray releases](https://github.com/attixray/mcp-language-server/releases).
 See [RELEASING.md](RELEASING.md) for automated builds, checksums and release tags.
 
@@ -29,12 +29,11 @@ toolchain, while csharp-ls needs the .NET SDK.
    Choose the release you want, including prereleases. On Windows x64 you can
    use `mcp-language-server_<tag>_windows_amd64_setup.exe`; see
    [Windows x64 installer](#windows-x64-installer) below. For a portable install,
-   download its `mcp-language-server_<tag>_<os>_<arch>` archive: `.zip` for Windows or
-   `.tar.gz` for Linux/macOS. Use `windows`, `linux` or `darwin` for the OS,
-   and `amd64` (x64) or `arm64` for the architecture.
+   download `mcp-language-server_<tag>_windows_amd64.zip` (`amd64` means x64).
+   For other operating systems or architectures, [build from source](#building-from-source).
 2. **Install or extract:** run the Windows x64 installer, or extract the
    archive to a permanent directory. The executable is
-   `mcp-language-server.exe` on Windows or `mcp-language-server` on Linux/macOS.
+   `mcp-language-server.exe`.
    The release's `SHA256SUMS` file contains download checksums; see
    [RELEASING.md](RELEASING.md) for package contents and release details.
 3. **Install the language server and its required SDK/runtime** for the code
