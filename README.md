@@ -26,23 +26,61 @@ toolchain, while csharp-ls needs the .NET SDK.
 
 1. **Download this fork's binary** from
    [attixray releases](https://github.com/attixray/mcp-language-server/releases).
-   Choose the release you want, including prereleases, and download its
-   `mcp-language-server_<tag>_<os>_<arch>` archive: `.zip` for Windows or
+   Choose the release you want, including prereleases. On Windows x64 you can
+   use `mcp-language-server_<tag>_windows_amd64_setup.exe`; see
+   [Windows x64 installer](#windows-x64-installer) below. For a portable install,
+   download its `mcp-language-server_<tag>_<os>_<arch>` archive: `.zip` for Windows or
    `.tar.gz` for Linux/macOS. Use `windows`, `linux` or `darwin` for the OS,
    and `amd64` (x64) or `arm64` for the architecture.
-2. **Extract the archive** to a permanent directory. The executable is
+2. **Install or extract:** run the Windows x64 installer, or extract the
+   archive to a permanent directory. The executable is
    `mcp-language-server.exe` on Windows or `mcp-language-server` on Linux/macOS.
-   The release's `SHA256SUMS` file contains archive checksums; see
+   The release's `SHA256SUMS` file contains download checksums; see
    [RELEASING.md](RELEASING.md) for package contents and release details.
 3. **Install the language server and its required SDK/runtime** for the code
    you want to navigate, using the examples below.
-4. **Configure your MCP client** with the absolute path to the extracted
+4. **Configure your MCP client** with the absolute path to the installed or extracted
    executable as `command`, your repository as `--workspace`, and the language
    server executable as `--lsp`. The examples below use `mcp-language-server`
    as a shorthand; that works if its directory is on the client's `PATH`.
 
-To update, extract a newer release and point the MCP configuration at its
-executable, then restart the MCP client or its server connection.
+To update a portable install, extract a newer release and point the MCP
+configuration at its executable, then restart the MCP client or its server connection.
+
+### Windows x64 installer
+
+Run the release's `*_windows_amd64_setup.exe`. It installs for the current
+Windows user without administrator rights. The default MCP `command` is:
+
+```text
+C:\Users\<you>\AppData\Local\Programs\mcp-language-server\mcp-language-server.exe
+```
+
+Use the actual absolute path shown by Setup; MCP clients do not necessarily
+expand `%LOCALAPPDATA%`. The executable path stays the same across updates.
+The installer includes the same bridge and supporting files as the x64 ZIP;
+it does not install a language server or change your MCP configuration or PATH.
+
+**Updating:** stop MCP connections using this installation, then run the newer
+installer. Setup remembers the previous installation directory, replaces the
+packaged files and maintains one uninstall entry. A shared broker may take up
+to two minutes to stop after its last connection closes (or your configured
+`--idle-timeout`). If the executable is still in use or is not writable, Setup
+stops before replacing files and asks you to retry. Silent installation fails
+with a nonzero exit code in this case. Setup does not terminate MCP processes
+or schedule replacement at reboot. Restart the MCP connections after installing.
+
+**Moving from a ZIP installation:** install to the default directory and change
+the MCP `command` to the path above once. Your old version directories remain
+available. Alternatively, explicitly choose the existing extracted directory
+in Setup to upgrade it in place; stop its running instances first. Setup does
+not search repositories or rewrite their configuration files.
+
+Re-running the same installer repairs missing packaged files. Uninstall through
+Windows Settings; stop its MCP connections first. Uninstall removes packaged
+files but leaves MCP client configurations, broker cache/logs and unrelated
+files alone. There is no self-updater: download and run a newer installer to
+update. Verify the download against the release's checksums.
 
 ## Language servers and MCP client configuration
 

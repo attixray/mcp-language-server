@@ -14,6 +14,7 @@ integrationtests/workspaces/clangd/.cache
 
 # Temporary files
 *~
+__pycache__/
 
 CLAUDE.md*
 .mcp.json

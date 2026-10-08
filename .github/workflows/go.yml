@@ -56,6 +56,27 @@ jobs:
       - name: Test OS locks, multi-process sharing, timeout and recovery
         run: go test -timeout 120s . ./internal/lsp
 
+  windows-installer:
+    name: Windows installer upgrade
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.1'
+      - name: Package and test the installer
+        shell: pwsh
+        run: |
+          $compiler = ./scripts/ensure_inno_setup.ps1 -Destination "$env:RUNNER_TEMP/inno-setup"
+          python scripts/package_release.py --os windows --arch amd64 --version snapshot-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/package_windows_installer.py --archive dist/mcp-language-server_snapshot-ci_windows_amd64.zip --iscc "$compiler"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test_windows_installer.py --archive dist/mcp-language-server_snapshot-ci_windows_amd64.zip --iscc "$compiler"
+
   integration:
     name: ${{ matrix.language }} integration
     runs-on: ubuntu-24.04
